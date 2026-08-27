@@ -1,6 +1,6 @@
 # Slurm Agent CLI
 
-`slurm-agent` is an independent, constrained CLI for operating a remote Slurm cluster over verified SSH. It is designed to be the capability boundary used by OpenClaw or another agent through `exec`; it is **not** an OpenClaw plugin and has no OpenClaw SDK dependency.
+`slurm-agent` is an independent, constrained CLI for operating a remote Slurm cluster over verified SSH. It is designed to be the capability boundary used by another agent through `exec`.
 
 The public interface contains only these Slurm lifecycle operations:
 
@@ -130,18 +130,6 @@ Errors retain a stable machine-readable code, for example:
 ```json
 {"ok":false,"error":{"code":"PARTITION_NOT_ALLOWED","message":"Partition gpu is not permitted."}}
 ```
-
-## OpenClaw exec integration
-
-Install the fixed package before OpenClaw starts, then configure its exec allowlist to permit only the resolved `slurm-agent` binary (for example `/usr/local/bin/slurm-agent`) and the six subcommand shapes above. Do not permit `ssh`, `bash`, `sh`, `node`, `npm`, `npx`, `scp`, or `sftp`. Keep SSH credentials and `SLURM_*` environment configuration outside agent-controlled prompts and arguments.
-
-An agent invocation is simply:
-
-```text
-exec: /usr/local/bin/slurm-agent status 12345
-```
-
-The exact allowlist syntax depends on the surrounding exec sandbox. Prefer argument-aware rules; an executable-only allowlist still relies on this CLI's strict parser and absence of a generic command.
 
 ## Security model and limitations
 

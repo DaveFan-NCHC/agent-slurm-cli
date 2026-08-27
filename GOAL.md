@@ -1,15 +1,11 @@
 ## 1. Project Goal
 
-建立一個獨立的 **Slurm Agent CLI**，透過 SSH 操作遠端 Slurm Cluster，提供一組安全、結構化、受限的 Slurm job lifecycle commands，供 OpenClaw 或其他 Agent 透過 `exec` 呼叫。
-
-本專案**不是 OpenClaw Plugin**。
-
-不得依賴 OpenClaw Plugin SDK。
+建立一個獨立的 **Slurm Agent CLI**，透過 SSH 操作遠端 Slurm Cluster，提供一組安全、結構化、受限的 Slurm job lifecycle commands，供 Agent 透過 `exec` 呼叫。
 
 核心架構：
 
 ```text
-OpenClaw / Other Agent
+      Agent
         │
         │ exec
         ▼
@@ -116,34 +112,7 @@ npx @nchc/slurm-agent status 12345
 
 ---
 
-# 4. OpenClaw Integration
-
-OpenClaw integration 僅透過 `exec`。
-
-例如：
-
-```text
-OpenClaw
-   ↓
-exec
-   ↓
-slurm-agent status 12345
-```
-
-本專案不應：
-
-```text
-import OpenClaw SDK
-registerTool()
-definePlugin()
-depend on OpenClaw runtime
-```
-
-CLI 必須可以完全獨立運作。
-
----
-
-# 5. Design Principle
+# 4. Design Principle
 
 不要提供：
 
@@ -160,7 +129,7 @@ slurm-agent command "..."
 
 ---
 
-# 6. SSH Layer
+# 5. SSH Layer
 
 SSH 只存在於 CLI 內部。
 
@@ -186,7 +155,7 @@ CLI user 不得自行指定任意 remote command。
 
 ---
 
-# 7. Required Commands
+# 6. Required Commands
 
 ## `slurm-agent submit`
 
@@ -348,7 +317,7 @@ workspace path containment
 
 ---
 
-# 8. Remote Workspace
+# 7. Remote Workspace
 
 設定：
 
@@ -387,7 +356,7 @@ symlink escape
 
 ---
 
-# 9. SSH Configuration
+# 8. SSH Configuration
 
 使用環境變數：
 
@@ -412,7 +381,7 @@ SLURM_SSH_KEY_PATH
 
 ---
 
-# 10. Host Verification
+# 9. Host Verification
 
 Production 必須驗證 SSH host identity。
 
@@ -431,7 +400,7 @@ fingerprint verification
 
 ---
 
-# 11. Policy
+# 10. Policy
 
 建立獨立 policy layer。
 
@@ -452,7 +421,7 @@ max_time_minutes: 240
 
 ---
 
-# 12. Safe Command Construction
+# 11. Safe Command Construction
 
 禁止：
 
@@ -477,7 +446,7 @@ construct
 
 ---
 
-# 13. Output Contract
+# 12. Output Contract
 
 所有 commands 預設 stdout 必須是 JSON。
 
@@ -516,7 +485,7 @@ construct
 
 ---
 
-# 14. Exit Codes
+# 13. Exit Codes
 
 CLI 必須有穩定 exit code。
 
@@ -537,7 +506,7 @@ JSON error code 與 process exit code 都要存在。
 
 ---
 
-# 15. Error Codes
+# 14. Error Codes
 
 至少建立：
 
@@ -568,7 +537,7 @@ REMOTE_COMMAND_TIMEOUT
 
 ---
 
-# 16. Audit Logging
+# 15. Audit Logging
 
 記錄：
 
@@ -598,7 +567,7 @@ Audit log 應寫 stderr、log file 或 dedicated logger。
 
 ---
 
-# 17. Suggested Structure
+# 16. Suggested Structure
 
 ```text
 slurm-agent/
@@ -653,7 +622,7 @@ slurm-agent/
 
 ---
 
-# 18. Implementation Order
+# 17. Implementation Order
 
 ## Phase 1
 
@@ -737,7 +706,7 @@ slurm-agent logs
 
 ---
 
-# 19. Security Tests
+# 18. Security Tests
 
 必須測：
 
@@ -772,7 +741,7 @@ arbitrary file read
 
 ---
 
-# 20. OpenClaw Deployment Model
+# 19. Deployment Model
 
 預期 production 使用方式：
 
@@ -783,7 +752,7 @@ install fixed CLI version
        ↓
 slurm-agent available in PATH
        ↓
-OpenClaw exec allowlist
+Agent exec allowlist
        ↓
 slurm-agent only
 ```
@@ -804,17 +773,13 @@ bash
 /usr/local/bin/slurm-agent
 ```
 
-如果 OpenClaw 的 exec policy 能限制 executable，優先只允許這個 binary。
-
 ---
 
-# 21. Non-Goals
+# 20. Non-Goals
 
 不要做：
 
 ```text
-OpenClaw Plugin
-OpenClaw SDK integration
 generic SSH client
 generic shell
 remote terminal
@@ -830,7 +795,7 @@ port forwarding
 
 ---
 
-# 22. Definition of Done
+# 21. Definition of Done
 
 專案完成時：
 
@@ -878,23 +843,9 @@ Slurm Login Node
 Slurm
 ```
 
-CLI 必須可以完全離開 OpenClaw 獨立使用。
-
 ---
 
-# 23. Instructions to Implementing Agent
-
-請直接實作專案，不要把它改成 OpenClaw Plugin。
-
-如果需要與 OpenClaw 整合，只需在 README 提供：
-
-```text
-如何安裝 slurm-agent
-如何讓 OpenClaw exec 呼叫
-如何限制 OpenClaw 只能執行 slurm-agent
-```
-
-不得新增 OpenClaw SDK dependency。
+# 22. Instructions to Implementing Agent
 
 先完成：
 
@@ -923,5 +874,4 @@ CLI
 5. security tests
 6. remaining limitations
 7. installation steps
-8. OpenClaw exec integration example
 ```

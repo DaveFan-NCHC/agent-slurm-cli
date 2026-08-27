@@ -5,7 +5,7 @@ description: "Operate jobs through the constrained slurm-agent CLI, including su
 
 # Slurm Agent Operations
 
-Use the installed `slurm-agent` executable as the only interface to the remote Slurm cluster. It is an independent CLI, not an OpenClaw plugin.
+Use the installed `slurm-agent` executable as the only interface to the remote Slurm cluster.
 
 ## Boundaries
 
