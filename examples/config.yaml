@@ -1,0 +1,10 @@
+# Copy this file to a protected location and set SLURM_POLICY_PATH to it.
+allowed_partitions:
+  - slurm-test
+max_nodes: 2
+max_ntasks: 16
+max_cpus_per_task: 8
+max_memory_gb: 64
+max_time_minutes: 240
+max_log_lines: 1000
+max_log_bytes: 1048576

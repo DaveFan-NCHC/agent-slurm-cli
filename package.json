@@ -1,0 +1,36 @@
+{
+  "name": "@nchc/slurm-agent",
+  "version": "0.1.0",
+  "description": "A constrained Slurm lifecycle CLI over verified SSH",
+  "type": "module",
+  "bin": {
+    "slurm-agent": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "examples",
+    "slurm-agent-policy.yaml",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "node scripts/clean.mjs && tsc -p tsconfig.json && node scripts/make-executable.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prepack": "npm run build"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "ssh2": "^1.16.0",
+    "yaml": "^2.8.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.18.0",
+    "@types/ssh2": "^1.15.5",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  },
+  "license": "Apache-2.0"
+}
