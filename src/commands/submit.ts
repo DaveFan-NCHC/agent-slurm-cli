@@ -5,6 +5,7 @@ export async function runSubmit(context: CommandContext, options: NormalizedSubm
   const resources = {
     partition: options.partition, nodes: options.nodes, ntasks: options.ntasks,
     cpus_per_task: options.cpusPerTask, memory: options.memory, time: options.time,
+    apptainer_image: options.apptainerImage, venv: options.venv,
   };
   const jobId = await context.client.submit(options);
   context.audit.write({ action: "submit", ssh_user: context.sshUser, job_id: jobId, resources, policy_decision: "allowed", result: "success", remote_exit_code: 0 });

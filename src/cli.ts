@@ -34,6 +34,8 @@ Submit options:
   --memory SIZE         default: 1G
   --time HH:MM:SS       default: 01:00:00
   --job-name NAME
+  --apptainer-image ALIAS
+  --venv ALIAS
 
 Output is JSON by default. Configuration is read from SLURM_* environment variables.
 Generic SSH or remote command execution is intentionally unavailable.`;
@@ -70,7 +72,7 @@ function enforceShape(parsed: Parsed, allowedOptions: string[], positionalCount:
 function prevalidateShape(parsed: Parsed): void {
   switch (parsed.command) {
     case "submit":
-      enforceShape(parsed, ["script", "partition", "nodes", "ntasks", "cpus-per-task", "memory", "time", "job-name"], 0);
+      enforceShape(parsed, ["script", "partition", "nodes", "ntasks", "cpus-per-task", "memory", "time", "job-name", "apptainer-image", "venv"], 0);
       break;
     case "list":
       enforceShape(parsed, [], 0);
@@ -103,7 +105,7 @@ function requiredOption(options: Map<string, string>, name: string): string {
 }
 
 function parseSubmit(parsed: Parsed, policy: ReturnType<typeof loadPolicy>): ReturnType<typeof validateSubmit> {
-  enforceShape(parsed, ["script", "partition", "nodes", "ntasks", "cpus-per-task", "memory", "time", "job-name"], 0);
+  enforceShape(parsed, ["script", "partition", "nodes", "ntasks", "cpus-per-task", "memory", "time", "job-name", "apptainer-image", "venv"], 0);
   const options: SubmitOptions = {
     script: requiredOption(parsed.options, "script"),
     partition: requiredOption(parsed.options, "partition"),
@@ -113,6 +115,8 @@ function parseSubmit(parsed: Parsed, policy: ReturnType<typeof loadPolicy>): Ret
     memory: parsed.options.get("memory") ?? "1G",
     time: parsed.options.get("time") ?? "01:00:00",
     jobName: parsed.options.get("job-name"),
+    apptainerImage: parsed.options.get("apptainer-image"),
+    venv: parsed.options.get("venv"),
   };
   return validateSubmit(options, policy);
 }
@@ -181,6 +185,7 @@ export async function main(
           partition: parsed.options.get("partition"), nodes: parsed.options.get("nodes") ?? "1",
           ntasks: parsed.options.get("ntasks") ?? "1", cpus_per_task: parsed.options.get("cpus-per-task") ?? "1",
           memory: parsed.options.get("memory") ?? "1G", time: parsed.options.get("time") ?? "01:00:00",
+          apptainer_image: parsed.options.get("apptainer-image"), venv: parsed.options.get("venv"),
         };
         response = await runSubmit(context, parseSubmit(parsed, policy));
         break;

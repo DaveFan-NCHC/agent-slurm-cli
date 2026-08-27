@@ -32,6 +32,8 @@ export type ErrorCode =
   | "ARTIFACT_ALREADY_EXISTS"
   | "ARTIFACT_DOWNLOAD_FAILED"
   | "LOCAL_PATH_NOT_ALLOWED"
+  | "RUNTIME_ALIAS_NOT_ALLOWED"
+  | "RUNTIME_NOT_FOUND"
   | "REMOTE_COMMAND_TIMEOUT";
 
 export class AgentError extends Error {

@@ -10,6 +10,8 @@ const policy: Policy = {
   allowedPartitions: ["slurm-test"], maxNodes: 2, maxNtasks: 16, maxCpusPerTask: 8,
   maxMemoryGb: 64, maxTimeMinutes: 240, maxLogLines: 1000, maxLogBytes: 1048576,
   maxArtifactBytes: 104857600,
+  allowedApptainerImages: { pytorch: "/opt/apptainer/pytorch.sif" },
+  allowedVirtualenvs: { "project-a": "/opt/venvs/project-a" },
 };
 
 const valid = {
@@ -52,6 +54,19 @@ describe("workspace paths", () => {
 
 describe("resource policy", () => {
   it("accepts bounded resources", () => expect(validateSubmit(valid, policy).memoryGb).toBe(8));
+  it("maps an Apptainer alias to its fixed policy path", () => {
+    expect(validateSubmit({ ...valid, apptainerImage: "pytorch" }, policy).apptainerImagePath)
+      .toBe("/opt/apptainer/pytorch.sif");
+  });
+  it("maps a virtualenv alias to its fixed policy path", () => {
+    expect(validateSubmit({ ...valid, venv: "project-a" }, policy).venvPath).toBe("/opt/venvs/project-a");
+  });
+  it.each(["unknown", "/etc/passwd", "$(id)", "name,ALL"])("rejects Apptainer alias %j", (alias) => {
+    expect(() => validateSubmit({ ...valid, apptainerImage: alias }, policy)).toThrow();
+  });
+  it("rejects simultaneous Apptainer and virtualenv selection", () => {
+    expect(() => validateSubmit({ ...valid, apptainerImage: "pytorch", venv: "project-a" }, policy)).toThrow();
+  });
   it.each([
     [{ ...valid, nodes: 3 }, "RESOURCE_LIMIT_EXCEEDED"],
     [{ ...valid, ntasks: 17 }, "RESOURCE_LIMIT_EXCEEDED"],

@@ -8,4 +8,6 @@ export interface Policy {
   maxLogLines: number;
   maxLogBytes: number;
   maxArtifactBytes: number;
+  allowedApptainerImages: Record<string, string>;
+  allowedVirtualenvs: Record<string, string>;
 }

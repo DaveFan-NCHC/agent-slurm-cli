@@ -10,6 +10,13 @@ function failure(result: RemoteResult, code: "SLURM_SUBMIT_FAILED" | "SLURM_QUER
   throw new AgentError(code, message, ExitCode.SlurmFailure, { remote_exit_code: result.exitCode });
 }
 
+function validateExportPath(path: string, label: string): string {
+  if (!/^\/[A-Za-z0-9_./+-]+$/.test(path) || path.split("/").includes("..")) {
+    throw new AgentError("RUNTIME_NOT_FOUND", `${label} resolves to a path that cannot be safely exported.`, ExitCode.General);
+  }
+  return path;
+}
+
 export class SlurmClient {
   constructor(
     private readonly executor: RemoteExecutor,
@@ -31,6 +38,24 @@ export class SlurmClient {
     const path = await this.realpath(this.workspace);
     if (!path) throw new AgentError("PATH_NOT_ALLOWED", "Remote workspace does not exist.", ExitCode.PolicyDenied);
     return path;
+  }
+
+  private async runtimePath(configuredPath: string, kind: "apptainer" | "venv"): Promise<string> {
+    const label = kind === "apptainer" ? "Apptainer image" : "Virtual environment";
+    const resolved = await this.realpath(configuredPath);
+    if (!resolved) throw new AgentError("RUNTIME_NOT_FOUND", `${label} configured by policy does not exist.`, ExitCode.General);
+    validateExportPath(resolved, label);
+    const expectedType = await this.run({ executable: "test", args: [kind === "apptainer" ? "-f" : "-d", "--", resolved] });
+    if (expectedType.exitCode !== 0) {
+      throw new AgentError("RUNTIME_NOT_FOUND", `${label} configured by policy has the wrong file type.`, ExitCode.General);
+    }
+    if (kind === "venv") {
+      const python = await this.run({ executable: "test", args: ["-x", "--", `${resolved}/bin/python`] });
+      if (python.exitCode !== 0) {
+        throw new AgentError("RUNTIME_NOT_FOUND", "Virtual environment does not contain an executable bin/python.", ExitCode.General);
+      }
+    }
+    return resolved;
   }
 
   async list(): Promise<JobSummary[]> {
@@ -71,6 +96,10 @@ export class SlurmClient {
     }
     const file = await this.run({ executable: "test", args: ["-f", "--", scriptReal] });
     if (file.exitCode !== 0) throw new AgentError("SCRIPT_NOT_FOUND", "Script is not a regular file.", ExitCode.PolicyDenied);
+    const apptainerImageReal = options.apptainerImagePath
+      ? await this.runtimePath(options.apptainerImagePath, "apptainer")
+      : undefined;
+    const venvReal = options.venvPath ? await this.runtimePath(options.venvPath, "venv") : undefined;
     const logDirectory = `${workspaceReal}/.slurm-agent/logs`;
     const artifactRoot = `${workspaceReal}/.slurm-agent/artifacts`;
     const mkdir = await this.run({ executable: "mkdir", args: ["-p", "--", logDirectory, artifactRoot] });
@@ -83,11 +112,14 @@ export class SlurmClient {
     if (!artifactRootReal || !isContained(workspaceReal, artifactRootReal)) {
       throw new AgentError("PATH_NOT_ALLOWED", "Artifact directory resolves outside the remote workspace.", ExitCode.PolicyDenied);
     }
+    const exportedEnvironment = [`SLURM_AGENT_ARTIFACT_ROOT=${artifactRootReal}`];
+    if (apptainerImageReal) exportedEnvironment.push(`SLURM_AGENT_APPTAINER_IMAGE=${apptainerImageReal}`);
+    if (venvReal) exportedEnvironment.push(`SLURM_AGENT_VENV=${venvReal}`);
     const args = [
       "--parsable", `--chdir=${workspaceReal}`, `--partition=${options.partition}`, `--nodes=${options.nodes}`,
       `--ntasks=${options.ntasks}`, `--cpus-per-task=${options.cpusPerTask}`, `--mem=${options.memory}`,
       `--time=${options.time}`, `--output=${logDirectoryReal}/%j.out`, `--error=${logDirectoryReal}/%j.err`,
-      `--export=ALL,SLURM_AGENT_ARTIFACT_ROOT=${artifactRootReal}`,
+      `--export=ALL,${exportedEnvironment.join(",")}`,
     ];
     if (options.jobName) args.push(`--job-name=${options.jobName}`);
     args.push("--", scriptReal);

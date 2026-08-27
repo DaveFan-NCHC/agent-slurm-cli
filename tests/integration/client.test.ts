@@ -7,6 +7,8 @@ const policy: Policy = {
   allowedPartitions: ["slurm-test"], maxNodes: 2, maxNtasks: 16, maxCpusPerTask: 8,
   maxMemoryGb: 64, maxTimeMinutes: 240, maxLogLines: 1000, maxLogBytes: 1024,
   maxArtifactBytes: 4096,
+  allowedApptainerImages: { pytorch: "/opt/apptainer/pytorch.sif" },
+  allowedVirtualenvs: { "project-a": "/opt/venvs/project-a" },
 };
 
 class MockExecutor implements RemoteExecutor {
@@ -44,6 +46,52 @@ describe("Slurm client security boundaries", () => {
     expect(submit.args).toContain("--output=/work/.slurm-agent/logs/%j.out");
     expect(submit.args).toContain("--export=ALL,SLURM_AGENT_ARTIFACT_ROOT=/work/.slurm-agent/artifacts");
     expect(submit.args.at(-1)).toBe("/work/jobs/test.sh");
+  });
+
+  it("exports a policy-resolved Apptainer image", async () => {
+    const remote = new MockExecutor([
+      ok("/work\n"), ok("/work/jobs/test.sh\n"), ok(),
+      ok("/opt/apptainer/pytorch.sif\n"), ok(), ok(),
+      ok("/work/.slurm-agent/logs\n"), ok("/work/.slurm-agent/artifacts\n"), ok("12345\n"),
+    ]);
+    const client = new SlurmClient(remote, "alice", "/work", policy);
+    await client.submit({
+      script: "jobs/test.sh", partition: "slurm-test", nodes: 1, ntasks: 1, cpusPerTask: 1,
+      memory: "1G", time: "00:10:00", memoryGb: 1, timeMinutes: 10,
+      apptainerImage: "pytorch", apptainerImagePath: "/opt/apptainer/pytorch.sif",
+    });
+    expect(remote.commands.at(-1)?.args).toContain(
+      "--export=ALL,SLURM_AGENT_ARTIFACT_ROOT=/work/.slurm-agent/artifacts,SLURM_AGENT_APPTAINER_IMAGE=/opt/apptainer/pytorch.sif",
+    );
+  });
+
+  it("exports a policy-resolved virtual environment after validating bin/python", async () => {
+    const remote = new MockExecutor([
+      ok("/work\n"), ok("/work/jobs/test.sh\n"), ok(),
+      ok("/opt/venvs/project-a\n"), ok(), ok(), ok(),
+      ok("/work/.slurm-agent/logs\n"), ok("/work/.slurm-agent/artifacts\n"), ok("12345\n"),
+    ]);
+    const client = new SlurmClient(remote, "alice", "/work", policy);
+    await client.submit({
+      script: "jobs/test.sh", partition: "slurm-test", nodes: 1, ntasks: 1, cpusPerTask: 1,
+      memory: "1G", time: "00:10:00", memoryGb: 1, timeMinutes: 10,
+      venv: "project-a", venvPath: "/opt/venvs/project-a",
+    });
+    expect(remote.commands).toContainEqual({ executable: "test", args: ["-x", "--", "/opt/venvs/project-a/bin/python"] });
+    expect(remote.commands.at(-1)?.args).toContain(
+      "--export=ALL,SLURM_AGENT_ARTIFACT_ROOT=/work/.slurm-agent/artifacts,SLURM_AGENT_VENV=/opt/venvs/project-a",
+    );
+  });
+
+  it("rejects a missing policy-resolved runtime before sbatch", async () => {
+    const remote = new MockExecutor([ok("/work\n"), ok("/work/jobs/test.sh\n"), ok(), { ...ok(), exitCode: 1 }]);
+    const client = new SlurmClient(remote, "alice", "/work", policy);
+    await expect(client.submit({
+      script: "jobs/test.sh", partition: "slurm-test", nodes: 1, ntasks: 1, cpusPerTask: 1,
+      memory: "1G", time: "00:10:00", memoryGb: 1, timeMinutes: 10,
+      apptainerImage: "pytorch", apptainerImagePath: "/opt/apptainer/pytorch.sif",
+    })).rejects.toMatchObject({ code: "RUNTIME_NOT_FOUND" });
+    expect(remote.commands.some((command) => command.executable === "sbatch")).toBe(false);
   });
 
   it("rejects a script symlink that resolves outside workspace", async () => {

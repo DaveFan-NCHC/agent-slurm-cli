@@ -10,11 +10,25 @@ export interface SubmitOptions {
   memory: string;
   time: string;
   jobName?: string;
+  apptainerImage?: string;
+  venv?: string;
 }
 
 export interface NormalizedSubmit extends SubmitOptions {
   memoryGb: number;
   timeMinutes: number;
+  apptainerImagePath?: string;
+  venvPath?: string;
+}
+
+const runtimeAliasPattern = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
+
+function resolveRuntimeAlias(alias: string | undefined, allowed: Record<string, string>, label: string): string | undefined {
+  if (alias === undefined) return undefined;
+  if (!runtimeAliasPattern.test(alias)) throw invalid(`${label} must be a safe logical alias.`);
+  const path = allowed[alias];
+  if (!path) throw policyDenied("RUNTIME_ALIAS_NOT_ALLOWED", `${label} alias ${alias} is not permitted.`);
+  return path;
 }
 
 export function parsePositiveInteger(text: string, option: string): number {
@@ -66,6 +80,11 @@ export function validateSubmit(options: SubmitOptions, policy: Policy): Normaliz
     throw policyDenied("PARTITION_NOT_ALLOWED", `Partition ${options.partition} is not permitted.`);
   }
   validateJobName(options.jobName);
+  if (options.apptainerImage && options.venv) {
+    throw invalid("--apptainer-image and --venv are mutually exclusive.");
+  }
+  const apptainerImagePath = resolveRuntimeAlias(options.apptainerImage, policy.allowedApptainerImages, "Apptainer image");
+  const venvPath = resolveRuntimeAlias(options.venv, policy.allowedVirtualenvs, "Virtual environment");
   const limits: Array<[number, number, string]> = [
     [options.nodes, policy.maxNodes, "nodes"], [options.ntasks, policy.maxNtasks, "ntasks"],
     [options.cpusPerTask, policy.maxCpusPerTask, "cpus-per-task"],
@@ -82,7 +101,7 @@ export function validateSubmit(options: SubmitOptions, policy: Policy): Normaliz
   if (timeMinutes > policy.maxTimeMinutes) {
     throw policyDenied("TIME_LIMIT_EXCEEDED", `time exceeds policy maximum ${policy.maxTimeMinutes} minutes.`);
   }
-  return { ...options, memoryGb, timeMinutes };
+  return { ...options, memoryGb, timeMinutes, apptainerImagePath, venvPath };
 }
 
 export function validateJobId(value: string): string {

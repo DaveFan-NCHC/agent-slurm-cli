@@ -55,10 +55,20 @@ slurm-agent submit \
   --cpus-per-task 2 \
   --memory 8G \
   --time 01:00:00 \
+  --apptainer-image pytorch \
   --job-name example
 ```
 
 Defaults are one node, one task, one CPU per task, `1G`, and `01:00:00`. Resource values and the partition must remain within the configured policy. Record the returned `job_id`; use only that decimal ID in later commands.
+
+Optionally select one policy-defined runtime alias:
+
+```bash
+slurm-agent submit ... --apptainer-image pytorch
+slurm-agent submit ... --venv project-a
+```
+
+The options are mutually exclusive. Never pass a raw path, image URI, bind mount, environment override, or runtime command. Policy maps the alias to a fixed path; the CLI verifies it and exports `SLURM_AGENT_APPTAINER_IMAGE` or `SLURM_AGENT_VENV` to the predefined script. The script must consume the value explicitly, for example with `apptainer exec "$SLURM_AGENT_APPTAINER_IMAGE" ...` or `"$SLURM_AGENT_VENV/bin/python" ...`.
 
 Do not automatically retry an ambiguous failed submission, because the first submission might have reached Slurm. Inspect `list` once and ask for direction if the outcome cannot be established.
 
@@ -129,4 +139,4 @@ Success has `ok: true`; failure has `ok: false` and an `error.code` plus `error.
 7 ownership denied
 ```
 
-For `JOB_NOT_OWNED_BY_USER`, `PATH_NOT_ALLOWED`, `PARTITION_NOT_ALLOWED`, `RESOURCE_LIMIT_EXCEEDED`, `TIME_LIMIT_EXCEEDED`, or `ARTIFACT_TOO_LARGE`, stop rather than attempting a workaround. For `ARTIFACT_ALREADY_EXISTS`, preserve the existing file. For transient query failures, a bounded retry is reasonable; do not blindly retry `submit` or `cancel`.
+For `JOB_NOT_OWNED_BY_USER`, `PATH_NOT_ALLOWED`, `PARTITION_NOT_ALLOWED`, `RUNTIME_ALIAS_NOT_ALLOWED`, `RESOURCE_LIMIT_EXCEEDED`, `TIME_LIMIT_EXCEEDED`, or `ARTIFACT_TOO_LARGE`, stop rather than attempting a workaround. For `ARTIFACT_ALREADY_EXISTS`, preserve the existing file. For transient query failures, a bounded retry is reasonable; do not blindly retry `submit` or `cancel`.

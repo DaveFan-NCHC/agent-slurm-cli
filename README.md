@@ -54,7 +54,18 @@ export SLURM_AUDIT_LOG=/var/log/slurm-agent/audit.jsonl
 
 `SLURM_SSH_KNOWN_HOSTS` must contain a plain hostname entry (or `[host]:port` for a non-default port). Hashed hostnames are not parsed. As an alternative, set `SLURM_SSH_HOST_FINGERPRINT` to a pinned `SHA256:...` host-key fingerprint. One of these verification methods is mandatory; insecure host-key checking is not available. The private key is read only from `SLURM_SSH_KEY_PATH`.
 
-Copy [examples/config.yaml](examples/config.yaml) to the protected `SLURM_POLICY_PATH` location and adjust its partition and resource limits. Unknown policy keys fail closed.
+Copy [examples/config.yaml](examples/config.yaml) to the protected `SLURM_POLICY_PATH` location and adjust its partition, resource limits, and optional runtime aliases. Unknown policy keys fail closed.
+
+Runtime aliases map agent-visible logical names to operator-controlled absolute paths:
+
+```yaml
+allowed_apptainer_images:
+  pytorch: /opt/apptainer/pytorch.sif
+allowed_virtualenvs:
+  project-a: /home/agent/venvs/project-a
+```
+
+The alias is accepted from the CLI; a raw image or virtualenv path is not.
 
 The configured SSH account should also be restricted at the cluster and filesystem layers. The CLI boundary complements, but does not replace, least-privilege Unix and Slurm configuration.
 
@@ -71,11 +82,31 @@ slurm-agent submit \
   --cpus-per-task 2 \
   --memory 8G \
   --time 01:00:00 \
+  --apptainer-image pytorch \
   --job-name naca
 ```
 
 ```json
 {"ok":true,"job_id":"12345"}
+```
+
+Choose at most one runtime alias per submission:
+
+```bash
+slurm-agent submit --script jobs/train.sh --partition slurm-test --apptainer-image pytorch
+slurm-agent submit --script jobs/train.sh --partition slurm-test --venv project-a
+```
+
+The CLI resolves and verifies the fixed policy path, then exports either `SLURM_AGENT_APPTAINER_IMAGE` or `SLURM_AGENT_VENV`. It does not execute a caller-provided container command. The predefined job script consumes the selected runtime explicitly:
+
+```bash
+if [ -n "${SLURM_AGENT_APPTAINER_IMAGE:-}" ]; then
+  exec apptainer exec "$SLURM_AGENT_APPTAINER_IMAGE" python train.py
+fi
+
+if [ -n "${SLURM_AGENT_VENV:-}" ]; then
+  exec "$SLURM_AGENT_VENV/bin/python" train.py
+fi
 ```
 
 Other operations:
@@ -135,6 +166,7 @@ Errors retain a stable machine-readable code, for example:
 
 - Every remote command consists of a compile-time executable allowlist plus separately shell-quoted arguments; no shell fragments are accepted.
 - Job IDs, partition names, script segments, job names, resource units, and times use strict grammars. Unknown flags and duplicate flags are rejected.
+- Runtime selection accepts only policy-defined logical aliases. Apptainer images must resolve to regular files; virtual environments must contain an executable `bin/python`. Raw runtime paths, image URIs, bind mounts, and caller-provided commands are unavailable.
 - `cancel`, `status`, `logs`, and `artifact` confirm that Slurm reports the configured user as owner.
 - Script and log paths are checked with remote `realpath`, preventing traversal and symlink escape.
 - Artifact transfer is an internal, single-file SFTP stream after remote containment checks; it is not an SFTP browser. The destination is derived from trusted configuration and the job ID, and is created without overwrite.

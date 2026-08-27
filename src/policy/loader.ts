@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { posix } from "node:path";
 import { parse } from "yaml";
 import { AgentError, ExitCode } from "../errors/errors.js";
 import type { Policy } from "./types.js";
@@ -6,8 +7,11 @@ import type { Policy } from "./types.js";
 const keys = [
   "allowed_partitions", "max_nodes", "max_ntasks", "max_cpus_per_task",
   "max_memory_gb", "max_time_minutes", "max_log_lines", "max_log_bytes",
-  "max_artifact_bytes",
+  "max_artifact_bytes", "allowed_apptainer_images", "allowed_virtualenvs",
 ] as const;
+
+const aliasPattern = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
+const fixedPathPattern = /^\/[A-Za-z0-9_./+-]+$/;
 
 function positive(value: unknown, key: string, defaultValue?: number): number {
   const resolved = value ?? defaultValue;
@@ -15,6 +19,24 @@ function positive(value: unknown, key: string, defaultValue?: number): number {
     throw new AgentError("CONFIGURATION_ERROR", `${key} must be a positive integer.`, ExitCode.General);
   }
   return resolved as number;
+}
+
+function fixedPathMap(value: unknown, key: string): Record<string, string> {
+  if (value === undefined) return {};
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new AgentError("CONFIGURATION_ERROR", `${key} must be a mapping of aliases to absolute paths.`, ExitCode.General);
+  }
+  const result: Record<string, string> = {};
+  for (const [alias, path] of Object.entries(value as Record<string, unknown>)) {
+    if (!aliasPattern.test(alias)) {
+      throw new AgentError("CONFIGURATION_ERROR", `${key} contains an invalid alias.`, ExitCode.General);
+    }
+    if (typeof path !== "string" || !posix.isAbsolute(path) || !fixedPathPattern.test(path) || path.split("/").includes("..")) {
+      throw new AgentError("CONFIGURATION_ERROR", `${key}.${alias} must be a safe absolute POSIX path.`, ExitCode.General);
+    }
+    result[alias] = path;
+  }
+  return result;
 }
 
 export function loadPolicy(path: string): Policy {
@@ -46,5 +68,7 @@ export function loadPolicy(path: string): Policy {
     maxLogLines: positive(data.max_log_lines, "max_log_lines", 1000),
     maxLogBytes: positive(data.max_log_bytes, "max_log_bytes", 1048576),
     maxArtifactBytes: positive(data.max_artifact_bytes, "max_artifact_bytes", 104857600),
+    allowedApptainerImages: fixedPathMap(data.allowed_apptainer_images, "allowed_apptainer_images"),
+    allowedVirtualenvs: fixedPathMap(data.allowed_virtualenvs, "allowed_virtualenvs"),
   };
 }
