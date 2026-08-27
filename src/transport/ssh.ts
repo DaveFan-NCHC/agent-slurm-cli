@@ -1,9 +1,12 @@
-import { createHash, timingSafeEqual } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { Client, type ConnectConfig, type ClientChannel } from "ssh2";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
+import { once } from "node:events";
+import { createWriteStream, linkSync, readFileSync, unlinkSync } from "node:fs";
+import { Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import { Client, type ConnectConfig, type ClientChannel, type SFTPWrapper } from "ssh2";
 import type { SshConfig } from "../config/loader.js";
 import { AgentError, ExitCode } from "../errors/errors.js";
-import { renderCommand, type RemoteExecutor, type RemoteResult, type SafeCommand } from "./types.js";
+import { renderCommand, type RemoteExecutor, type RemoteResult, type SafeArtifactTransfer, type SafeCommand } from "./types.js";
 
 interface KnownHostEntry { hosts: string[]; key: Buffer }
 
@@ -153,6 +156,71 @@ export class SshExecutor implements RemoteExecutor {
         });
       });
     });
+  }
+
+  async downloadArtifact({ remotePath, localPath, maxBytes }: SafeArtifactTransfer): Promise<{ bytes: number }> {
+    const client = await this.connect();
+    const sftp = await new Promise<SFTPWrapper>((resolve, reject) => {
+      client.sftp((error, session) => {
+        if (error) reject(new AgentError("ARTIFACT_DOWNLOAD_FAILED", `Unable to start controlled artifact transfer: ${error.message}`, ExitCode.SshFailure));
+        else resolve(session);
+      });
+    });
+    const temporaryPath = `${localPath}.part-${process.pid}-${randomUUID()}`;
+    let temporaryCreated = false;
+    try {
+      const attributes = await new Promise<import("ssh2").Stats>((resolve, reject) => {
+        sftp.stat(remotePath, (error, stats) => error ? reject(error) : resolve(stats));
+      });
+      if (!attributes.isFile()) {
+        throw new AgentError("ARTIFACT_NOT_FOUND", "Remote artifact is not a regular file.", ExitCode.NotFound);
+      }
+      if (attributes.size > maxBytes) {
+        throw new AgentError("ARTIFACT_TOO_LARGE", `Artifact exceeds policy maximum ${maxBytes} bytes.`, ExitCode.PolicyDenied);
+      }
+      let bytes = 0;
+      const limiter = new Transform({
+        transform(chunk: Buffer, _encoding, callback) {
+          bytes += chunk.length;
+          if (bytes > maxBytes) callback(new AgentError("ARTIFACT_TOO_LARGE", `Artifact exceeds policy maximum ${maxBytes} bytes.`, ExitCode.PolicyDenied));
+          else callback(null, chunk);
+        },
+      });
+      const output = createWriteStream(temporaryPath, { flags: "wx", mode: 0o600 });
+      await once(output, "open");
+      temporaryCreated = true;
+      const controller = new AbortController();
+      const transferTimeout = setTimeout(() => controller.abort(), this.config.timeoutMs);
+      try {
+        await pipeline(sftp.createReadStream(remotePath), limiter, output, { signal: controller.signal });
+      } catch (cause) {
+        if (controller.signal.aborted) {
+          throw new AgentError("REMOTE_COMMAND_TIMEOUT", "Artifact download timed out.", ExitCode.SshFailure);
+        }
+        throw cause;
+      } finally {
+        clearTimeout(transferTimeout);
+      }
+      try {
+        linkSync(temporaryPath, localPath);
+      } catch (cause) {
+        if ((cause as NodeJS.ErrnoException).code === "EEXIST") {
+          throw new AgentError("ARTIFACT_ALREADY_EXISTS", "The local artifact already exists; overwriting is not permitted.", ExitCode.General);
+        }
+        throw cause;
+      }
+      try { unlinkSync(temporaryPath); } catch { /* destination is already installed atomically */ }
+      temporaryCreated = false;
+      return { bytes };
+    } catch (cause) {
+      if (temporaryCreated) {
+        try { unlinkSync(temporaryPath); } catch { /* best-effort temporary cleanup */ }
+      }
+      if (cause instanceof AgentError) throw cause;
+      throw new AgentError("ARTIFACT_DOWNLOAD_FAILED", `Artifact download failed: ${(cause as Error).message}`, ExitCode.SshFailure);
+    } finally {
+      sftp.end();
+    }
   }
 
   async close(): Promise<void> {

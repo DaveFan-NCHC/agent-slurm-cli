@@ -16,6 +16,7 @@ export interface AppConfig {
   ssh: SshConfig;
   policyPath: string;
   auditLogPath?: string;
+  localArtifactsPath?: string;
 }
 
 function required(env: NodeJS.ProcessEnv, name: string): string {
@@ -68,5 +69,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     },
     policyPath: env.SLURM_POLICY_PATH?.trim() || "./slurm-agent-policy.yaml",
     auditLogPath: env.SLURM_AUDIT_LOG?.trim() || undefined,
+    localArtifactsPath: env.SLURM_LOCAL_ARTIFACTS?.trim() || undefined,
   };
 }

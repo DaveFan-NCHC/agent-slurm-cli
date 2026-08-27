@@ -8,3 +8,4 @@ max_memory_gb: 64
 max_time_minutes: 240
 max_log_lines: 1000
 max_log_bytes: 1048576
+max_artifact_bytes: 104857600

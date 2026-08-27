@@ -17,3 +17,10 @@ export interface LogResult {
   content: string;
   truncated: boolean;
 }
+
+export interface ArtifactResult {
+  job_id: string;
+  remote_path: string;
+  local_path: string;
+  bytes: number;
+}

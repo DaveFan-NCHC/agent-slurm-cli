@@ -6,16 +6,22 @@ import type { RemoteExecutor, RemoteResult, SafeCommand } from "../../src/transp
 const policy: Policy = {
   allowedPartitions: ["slurm-test"], maxNodes: 2, maxNtasks: 16, maxCpusPerTask: 8,
   maxMemoryGb: 64, maxTimeMinutes: 240, maxLogLines: 1000, maxLogBytes: 1024,
+  maxArtifactBytes: 4096,
 };
 
 class MockExecutor implements RemoteExecutor {
   readonly commands: SafeCommand[] = [];
+  readonly downloads: Array<{ remotePath: string; localPath: string; maxBytes: number }> = [];
   constructor(private readonly results: RemoteResult[]) {}
   async run(command: SafeCommand): Promise<RemoteResult> {
     this.commands.push(command);
     const result = this.results.shift();
     if (!result) throw new Error("Missing mock result");
     return result;
+  }
+  async downloadArtifact({ remotePath, localPath, maxBytes }: { remotePath: string; localPath: string; maxBytes: number }): Promise<{ bytes: number }> {
+    this.downloads.push({ remotePath, localPath, maxBytes });
+    return { bytes: 5 };
   }
   async close(): Promise<void> {}
 }
@@ -25,7 +31,8 @@ const ok = (stdout = ""): RemoteResult => ({ stdout, stderr: "", exitCode: 0 });
 describe("Slurm client security boundaries", () => {
   it("constructs submit from validated fields and fixed log paths", async () => {
     const remote = new MockExecutor([
-      ok("/work\n"), ok("/work/jobs/test.sh\n"), ok(), ok(), ok("/work/.slurm-agent/logs\n"), ok("12345;cluster\n"),
+      ok("/work\n"), ok("/work/jobs/test.sh\n"), ok(), ok(), ok("/work/.slurm-agent/logs\n"),
+      ok("/work/.slurm-agent/artifacts\n"), ok("12345;cluster\n"),
     ]);
     const client = new SlurmClient(remote, "alice", "/work", policy);
     await expect(client.submit({
@@ -35,6 +42,7 @@ describe("Slurm client security boundaries", () => {
     const submit = remote.commands.at(-1)!;
     expect(submit.executable).toBe("sbatch");
     expect(submit.args).toContain("--output=/work/.slurm-agent/logs/%j.out");
+    expect(submit.args).toContain("--export=ALL,SLURM_AGENT_ARTIFACT_ROOT=/work/.slurm-agent/artifacts");
     expect(submit.args.at(-1)).toBe("/work/jobs/test.sh");
   });
 
@@ -60,6 +68,18 @@ describe("Slurm client security boundaries", () => {
     expect(remote.commands.some((command) => command.executable === "sbatch")).toBe(false);
   });
 
+  it("rejects an artifact-directory symlink that resolves outside workspace", async () => {
+    const remote = new MockExecutor([
+      ok("/work\n"), ok("/work/jobs/test.sh\n"), ok(), ok(), ok("/work/.slurm-agent/logs\n"), ok("/tmp/artifacts\n"),
+    ]);
+    const client = new SlurmClient(remote, "alice", "/work", policy);
+    await expect(client.submit({
+      script: "jobs/test.sh", partition: "slurm-test", nodes: 1, ntasks: 1, cpusPerTask: 1,
+      memory: "1G", time: "00:10:00", memoryGb: 1, timeMinutes: 10,
+    })).rejects.toMatchObject({ code: "PATH_NOT_ALLOWED" });
+    expect(remote.commands.some((command) => command.executable === "sbatch")).toBe(false);
+  });
+
   it("refuses to cancel another user's job", async () => {
     const remote = new MockExecutor([ok("44|bob|job|p|RUNNING|00:01\n")]);
     const client = new SlurmClient(remote, "alice", "/work", policy);
@@ -76,4 +96,37 @@ describe("Slurm client security boundaries", () => {
     await expect(client.logs("44", "stdout", 20)).resolves.toMatchObject({ content: "hello\n" });
     expect(remote.commands.at(-1)).toMatchObject({ executable: "tail", maxOutputBytes: 1024 });
   });
+
+  it("downloads only from the owned job artifact directory", async () => {
+    const remote = new MockExecutor([
+      ok("44|alice|job|p|COMPLETED|00:01\n"), ok("/work\n"),
+      ok("/work/.slurm-agent/artifacts/44\n"), ok("/work/.slurm-agent/artifacts/44/results/model.bin\n"), ok(),
+    ]);
+    const client = new SlurmClient(remote, "alice", "/work", policy, "/tmp/slurm-agent-test-artifacts");
+    await expect(client.artifact("44", "results/model.bin")).resolves.toMatchObject({ bytes: 5 });
+    expect(remote.downloads).toHaveLength(1);
+    expect(remote.downloads[0]).toMatchObject({
+      remotePath: "/work/.slurm-agent/artifacts/44/results/model.bin", maxBytes: 4096,
+    });
+  });
+
+  it("rejects artifact symlink escape before download", async () => {
+    const remote = new MockExecutor([
+      ok("44|alice|job|p|COMPLETED|00:01\n"), ok("/work\n"),
+      ok("/work/.slurm-agent/artifacts/44\n"), ok("/etc/passwd\n"),
+    ]);
+    const client = new SlurmClient(remote, "alice", "/work", policy, "/tmp/slurm-agent-test-artifacts");
+    await expect(client.artifact("44", "results/model.bin")).rejects.toMatchObject({ code: "PATH_NOT_ALLOWED" });
+    expect(remote.downloads).toHaveLength(0);
+  });
+
+  it.each(["../secret", "/etc/passwd", "results/a;id", "results/a$(id)"])(
+    "rejects artifact path %j before any remote operation", async (path) => {
+      const remote = new MockExecutor([]);
+      const client = new SlurmClient(remote, "alice", "/work", policy, "/tmp/slurm-agent-test-artifacts");
+      await expect(client.artifact("44", path)).rejects.toMatchObject({ code: "PATH_NOT_ALLOWED" });
+      expect(remote.commands).toHaveLength(0);
+      expect(remote.downloads).toHaveLength(0);
+    },
+  );
 });

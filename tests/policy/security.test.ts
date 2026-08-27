@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { resolveWorkspacePath } from "../../src/policy/path.js";
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { resolveLocalArtifactPath, resolveWorkspacePath } from "../../src/policy/path.js";
 import { validateJobId, validateSubmit } from "../../src/policy/validator.js";
 import type { Policy } from "../../src/policy/types.js";
 
 const policy: Policy = {
   allowedPartitions: ["slurm-test"], maxNodes: 2, maxNtasks: 16, maxCpusPerTask: 8,
   maxMemoryGb: 64, maxTimeMinutes: 240, maxLogLines: 1000, maxLogBytes: 1048576,
+  maxArtifactBytes: 104857600,
 };
 
 const valid = {
@@ -19,6 +23,30 @@ describe("workspace paths", () => {
   );
   it("resolves a safe relative path", () => {
     expect(resolveWorkspacePath("/home/agent/workspace", "jobs/test.sh")).toBe("/home/agent/workspace/jobs/test.sh");
+  });
+  it("rejects local artifact symlink escape", () => {
+    const root = mkdtempSync(join(tmpdir(), "slurm-agent-path-"));
+    const outside = mkdtempSync(join(tmpdir(), "slurm-agent-outside-"));
+    try {
+      mkdirSync(join(root, "44"));
+      symlinkSync(outside, join(root, "44", "escape"));
+      expect(() => resolveLocalArtifactPath(root, "44", "escape/secret.bin")).toThrow();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+  it("refuses to overwrite a local artifact", () => {
+    const root = mkdtempSync(join(tmpdir(), "slurm-agent-overwrite-"));
+    try {
+      const target = resolveLocalArtifactPath(root, "44", "results/model.bin");
+      writeFileSync(target, "existing");
+      expect(() => resolveLocalArtifactPath(root, "44", "results/model.bin")).toThrowError(
+        expect.objectContaining({ code: "ARTIFACT_ALREADY_EXISTS" }),
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

@@ -10,9 +10,10 @@ slurm-agent list
 slurm-agent status JOB_ID
 slurm-agent cancel JOB_ID
 slurm-agent logs JOB_ID
+slurm-agent artifact JOB_ID --path RELATIVE_PATH
 ```
 
-There is deliberately no `exec`, `ssh`, `shell`, arbitrary path, file-transfer, or generic remote-command operation. Successful and failed operational commands write one JSON object to stdout. Audit events go to stderr or a protected file.
+There is deliberately no `exec`, `ssh`, `shell`, arbitrary path, generic file-transfer, or generic remote-command operation. Successful and failed operational commands write one JSON object to stdout. Audit events go to stderr or a protected file.
 
 ## Install
 
@@ -46,6 +47,7 @@ export SLURM_SSH_USER=slurm-agent
 export SLURM_SSH_KEY_PATH=/run/secrets/slurm-agent-key
 export SLURM_SSH_KNOWN_HOSTS=/etc/slurm-agent/known_hosts
 export SLURM_REMOTE_WORKSPACE=/home/slurm-agent/workspace
+export SLURM_LOCAL_ARTIFACTS=/var/lib/slurm-agent/artifacts
 export SLURM_POLICY_PATH=/etc/slurm-agent/policy.yaml
 export SLURM_AUDIT_LOG=/var/log/slurm-agent/audit.jsonl
 ```
@@ -82,10 +84,33 @@ Other operations:
 slurm-agent list
 slurm-agent status 12345
 slurm-agent logs 12345 --stream stdout --tail 200
+slurm-agent artifact 12345 --path results/model.bin
 slurm-agent cancel 12345
 ```
 
 Submissions always set output files to `.slurm-agent/logs/%j.out` and `%j.err` under the real remote workspace. `logs` can read only those generated names, limits lines and bytes, and verifies the resolved path is still inside the workspace. Consequently, `logs` does not read arbitrary output paths from jobs submitted outside this CLI.
+
+### Job artifacts
+
+`submit` supplies `SLURM_AGENT_ARTIFACT_ROOT` to the job. A job places downloadable files in its own ID directory:
+
+```bash
+artifact_dir="$SLURM_AGENT_ARTIFACT_ROOT/$SLURM_JOB_ID"
+mkdir -p "$artifact_dir/results"
+cp model.bin "$artifact_dir/results/model.bin"
+```
+
+The controlled download command is:
+
+```bash
+slurm-agent artifact 12345 --path results/model.bin
+```
+
+It verifies job ownership and both remote and local path containment, enforces `max_artifact_bytes`, and refuses to overwrite an existing local file. The resulting file is stored at `SLURM_LOCAL_ARTIFACTS/12345/results/model.bin`; callers cannot provide an arbitrary local output path.
+
+```json
+{"ok":true,"artifact":{"job_id":"12345","remote_path":"/home/slurm-agent/workspace/.slurm-agent/artifacts/12345/results/model.bin","local_path":"/var/lib/slurm-agent/artifacts/12345/results/model.bin","bytes":1048576}}
+```
 
 ## Exit codes
 
@@ -108,7 +133,7 @@ Errors retain a stable machine-readable code, for example:
 
 ## OpenClaw exec integration
 
-Install the fixed package before OpenClaw starts, then configure its exec allowlist to permit only the resolved `slurm-agent` binary (for example `/usr/local/bin/slurm-agent`) and the five subcommand shapes above. Do not permit `ssh`, `bash`, `sh`, `node`, `npm`, `npx`, `scp`, or `sftp`. Keep SSH credentials and `SLURM_*` environment configuration outside agent-controlled prompts and arguments.
+Install the fixed package before OpenClaw starts, then configure its exec allowlist to permit only the resolved `slurm-agent` binary (for example `/usr/local/bin/slurm-agent`) and the six subcommand shapes above. Do not permit `ssh`, `bash`, `sh`, `node`, `npm`, `npx`, `scp`, or `sftp`. Keep SSH credentials and `SLURM_*` environment configuration outside agent-controlled prompts and arguments.
 
 An agent invocation is simply:
 
@@ -122,8 +147,9 @@ The exact allowlist syntax depends on the surrounding exec sandbox. Prefer argum
 
 - Every remote command consists of a compile-time executable allowlist plus separately shell-quoted arguments; no shell fragments are accepted.
 - Job IDs, partition names, script segments, job names, resource units, and times use strict grammars. Unknown flags and duplicate flags are rejected.
-- `cancel`, `status`, and `logs` confirm that Slurm reports the configured user as owner.
+- `cancel`, `status`, `logs`, and `artifact` confirm that Slurm reports the configured user as owner.
 - Script and log paths are checked with remote `realpath`, preventing traversal and symlink escape.
+- Artifact transfer is an internal, single-file SFTP stream after remote containment checks; it is not an SFTP browser. The destination is derived from trusted configuration and the job ID, and is created without overwrite.
 - Audit records never contain private keys, credentials, command stderr, or environment values.
 - The remote host needs GNU-compatible `realpath`, `test`, `mkdir`, and `tail`, plus `sbatch`, `squeue`, `sacct`, and `scancel` in its non-interactive PATH.
 - Completed-job lookup depends on Slurm accounting (`sacct`) retention and permissions. If no allocation record is visible, the CLI reports `JOB_NOT_FOUND`.
@@ -137,4 +163,4 @@ npm test
 npm run build
 ```
 
-Tests cover traversal, absolute paths, symlink escape, shell metacharacters/control characters, unexpected commands, Slurm argument injection, resource limits, partition denial, ownership denial, fixed log paths, parsers, and output construction. Integration tests use a typed mock transport and do not require a live cluster.
+Tests cover traversal, absolute paths, remote/local symlink escape, shell metacharacters/control characters, unexpected commands, Slurm argument injection, resource limits, partition denial, ownership denial, fixed log/artifact paths, parsers, and output construction. Integration tests use a typed mock transport and do not require a live cluster.

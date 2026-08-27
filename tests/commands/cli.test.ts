@@ -24,6 +24,8 @@ describe("CLI boundary", () => {
     ["cancel", "1", "--user", "all"],
     ["list", "--partition", "gpu"],
     ["logs", "1", "--path", "/etc/passwd"],
+    ["artifact", "1", "--output", "/etc/passwd"],
+    ["artifact", "1", "--path", "../../etc/passwd", "--overwrite", "true"],
   ])("rejects unexpected command options before loading credentials", async (...argv) => {
     const stdout = new Sink();
     const code = await main(argv, {}, stdout);

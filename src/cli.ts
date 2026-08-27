@@ -2,6 +2,7 @@
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { AuditLogger } from "./audit/logger.js";
+import { runArtifact } from "./commands/artifact.js";
 import { runCancel } from "./commands/cancel.js";
 import { runList } from "./commands/list.js";
 import { runLogs } from "./commands/logs.js";
@@ -24,6 +25,7 @@ Usage:
   slurm-agent status JOB_ID
   slurm-agent cancel JOB_ID
   slurm-agent logs JOB_ID [--stream stdout|stderr] [--tail LINES]
+  slurm-agent artifact JOB_ID --path RELATIVE_PATH
 
 Submit options:
   --nodes N             default: 1
@@ -86,6 +88,11 @@ function prevalidateShape(parsed: Parsed): void {
       if (parsed.options.has("tail")) parsePositiveInteger(parsed.options.get("tail")!, "--tail");
       break;
     }
+    case "artifact":
+      enforceShape(parsed, ["path"], 1);
+      validateJobId(parsed.positionals[0]!);
+      requiredOption(parsed.options, "path");
+      break;
   }
 }
 
@@ -131,7 +138,7 @@ export async function main(
   try {
     const parsed = parseArgs(argv);
     action = parsed.command;
-    if (!["submit", "list", "status", "cancel", "logs"].includes(parsed.command)) {
+    if (!["submit", "list", "status", "cancel", "logs", "artifact"].includes(parsed.command)) {
       throw invalid(`Unknown command: ${parsed.command}.`);
     }
     prevalidateShape(parsed);
@@ -140,7 +147,7 @@ export async function main(
     sshUser = config.ssh.user;
     audit = new AuditLogger(config.auditLogPath, stderr);
     executor = executorFactory(config.ssh);
-    const client = new SlurmClient(executor, config.ssh.user, config.ssh.workspace, policy);
+    const client = new SlurmClient(executor, config.ssh.user, config.ssh.workspace, policy, config.localArtifactsPath);
     const context = { client, audit, sshUser: config.ssh.user };
     let response: Record<string, unknown>;
     switch (parsed.command) {
@@ -177,6 +184,13 @@ export async function main(
         };
         response = await runSubmit(context, parseSubmit(parsed, policy));
         break;
+      case "artifact": {
+        jobId = validateJobId(parsed.positionals[0]!);
+        const path = requiredOption(parsed.options, "path");
+        auditResources = { path };
+        response = await runArtifact(context, jobId, path);
+        break;
+      }
       default:
         throw invalid("Unsupported command.");
     }

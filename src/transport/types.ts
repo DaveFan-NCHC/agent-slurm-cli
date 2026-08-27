@@ -15,8 +15,15 @@ export interface RemoteResult {
   stderrTruncated?: boolean;
 }
 
+export interface SafeArtifactTransfer {
+  remotePath: string;
+  localPath: string;
+  maxBytes: number;
+}
+
 export interface RemoteExecutor {
   run(command: SafeCommand): Promise<RemoteResult>;
+  downloadArtifact(transfer: SafeArtifactTransfer): Promise<{ bytes: number }>;
   close(): Promise<void>;
 }
 

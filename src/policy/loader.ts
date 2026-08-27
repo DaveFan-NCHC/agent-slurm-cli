@@ -6,6 +6,7 @@ import type { Policy } from "./types.js";
 const keys = [
   "allowed_partitions", "max_nodes", "max_ntasks", "max_cpus_per_task",
   "max_memory_gb", "max_time_minutes", "max_log_lines", "max_log_bytes",
+  "max_artifact_bytes",
 ] as const;
 
 function positive(value: unknown, key: string, defaultValue?: number): number {
@@ -44,5 +45,6 @@ export function loadPolicy(path: string): Policy {
     maxTimeMinutes: positive(data.max_time_minutes, "max_time_minutes"),
     maxLogLines: positive(data.max_log_lines, "max_log_lines", 1000),
     maxLogBytes: positive(data.max_log_bytes, "max_log_bytes", 1048576),
+    maxArtifactBytes: positive(data.max_artifact_bytes, "max_artifact_bytes", 104857600),
   };
 }

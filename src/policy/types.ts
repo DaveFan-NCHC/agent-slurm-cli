@@ -7,4 +7,5 @@ export interface Policy {
   maxTimeMinutes: number;
   maxLogLines: number;
   maxLogBytes: number;
+  maxArtifactBytes: number;
 }
