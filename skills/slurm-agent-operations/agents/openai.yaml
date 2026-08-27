@@ -1,0 +1,4 @@
+interface:
+  display_name: "Slurm Agent Operations"
+  short_description: "Safely manage Slurm jobs and download artifacts"
+  default_prompt: "Use $slurm-agent-operations to safely operate a Slurm job and retrieve its artifacts."
