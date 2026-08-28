@@ -49,12 +49,12 @@ export class SlurmClient {
     const resolved = await this.realpath(configuredPath);
     if (!resolved) throw new AgentError("RUNTIME_NOT_FOUND", `${label} configured by policy does not exist.`, ExitCode.General);
     validateExportPath(resolved, label);
-    const expectedType = await this.run({ executable: "test", args: [kind === "apptainer" ? "-f" : "-d", "--", resolved] });
+    const expectedType = await this.run({ executable: "test", args: [kind === "apptainer" ? "-f" : "-d", resolved] });
     if (expectedType.exitCode !== 0) {
       throw new AgentError("RUNTIME_NOT_FOUND", `${label} configured by policy has the wrong file type.`, ExitCode.General);
     }
     if (kind === "venv") {
-      const python = await this.run({ executable: "test", args: ["-x", "--", `${resolved}/bin/python`] });
+      const python = await this.run({ executable: "test", args: ["-x", `${resolved}/bin/python`] });
       if (python.exitCode !== 0) {
         throw new AgentError("RUNTIME_NOT_FOUND", "Virtual environment does not contain an executable bin/python.", ExitCode.General);
       }
@@ -108,7 +108,7 @@ export class SlurmClient {
     }
     if (apptainerExecutableReal) {
       validateExportPath(apptainerExecutableReal, "Apptainer executable");
-      const executable = await this.run({ executable: "test", args: ["-x", "--", apptainerExecutableReal] });
+      const executable = await this.run({ executable: "test", args: ["-x", apptainerExecutableReal] });
       if (executable.exitCode !== 0) {
         throw new AgentError("RUNTIME_NOT_FOUND", "Configured Apptainer executable is not executable.", ExitCode.General);
       }
@@ -199,8 +199,6 @@ export class SlurmClient {
     if (!isContained(artifactDirectoryReal, remotePath)) {
       throw new AgentError("PATH_NOT_ALLOWED", "Artifact resolves outside its job directory.", ExitCode.PolicyDenied);
     }
-    const file = await this.run({ executable: "test", args: ["-f", "--", remotePath] });
-    if (file.exitCode !== 0) throw new AgentError("ARTIFACT_NOT_FOUND", "Artifact is not a regular file.", ExitCode.NotFound);
     const localPath = resolveLocalArtifactPath(this.localArtifactsPath, jobId, safeRelative);
     const downloaded = await this.executor.downloadArtifact({ remotePath, localPath, maxBytes: this.policy.maxArtifactBytes });
     return { job_id: jobId, remote_path: remotePath, local_path: localPath, bytes: downloaded.bytes };

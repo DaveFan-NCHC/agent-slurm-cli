@@ -17,7 +17,7 @@ import { SlurmClient } from "./slurm/client.js";
 import { SshExecutor } from "./transport/ssh.js";
 import type { RemoteExecutor } from "./transport/types.js";
 
-const VERSION = "0.2.0";
+const VERSION = "0.2.1";
 const HELP = `slurm-agent ${VERSION}
 
 Usage:

@@ -30,7 +30,7 @@ slurm-agent --version
 For production, publish and install a pinned version during image/host bootstrap:
 
 ```bash
-npm install -g @nchc/slurm-agent@0.2.0
+npm install -g @nchc/slurm-agent@0.2.1
 command -v slurm-agent
 ```
 

@@ -91,7 +91,8 @@ describe("Slurm client security boundaries", () => {
       venv: "project-a", venvPath: "/opt/venvs/project-a",
       scriptArgs: [],
     }, prepared);
-    expect(remote.commands).toContainEqual({ executable: "test", args: ["-x", "--", "/opt/venvs/project-a/bin/python"] });
+    expect(remote.commands).toContainEqual({ executable: "test", args: ["-x", "/opt/venvs/project-a/bin/python"] });
+    expect(remote.commands.filter((command) => command.executable === "test").every((command) => !command.args.includes("--"))).toBe(true);
     expect(remote.commands.at(-1)?.args.find((argument) => argument.startsWith("--export=")))
       .toContain("SLURM_AGENT_VENV=/opt/venvs/project-a");
   });
@@ -152,7 +153,7 @@ describe("Slurm client security boundaries", () => {
   it("downloads only from the owned job artifact directory", async () => {
     const remote = new MockExecutor([
       ok("44|alice|job|p|COMPLETED|00:01\n"), ok("/work\n"),
-      ok("/work/.slurm-agent/artifacts/44\n"), ok("/work/.slurm-agent/artifacts/44/results/model.bin\n"), ok(),
+      ok("/work/.slurm-agent/artifacts/44\n"), ok("/work/.slurm-agent/artifacts/44/results/model.bin\n"),
     ]);
     const client = new SlurmClient(remote, "alice", "/work", policy, "/tmp/slurm-agent-test-artifacts");
     await expect(client.artifact("44", "results/model.bin")).resolves.toMatchObject({ bytes: 5 });
@@ -160,6 +161,7 @@ describe("Slurm client security boundaries", () => {
     expect(remote.downloads[0]).toMatchObject({
       remotePath: "/work/.slurm-agent/artifacts/44/results/model.bin", maxBytes: 4096,
     });
+    expect(remote.commands.some((command) => command.executable === "test")).toBe(false);
   });
 
   it("rejects artifact symlink escape before download", async () => {
