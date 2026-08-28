@@ -1,12 +1,12 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { once } from "node:events";
 import { createWriteStream, linkSync, readFileSync, unlinkSync } from "node:fs";
-import { Transform } from "node:stream";
+import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { Client, type ConnectConfig, type ClientChannel, type SFTPWrapper } from "ssh2";
 import type { SshConfig } from "../config/loader.js";
 import { AgentError, ExitCode } from "../errors/errors.js";
-import { renderCommand, type RemoteExecutor, type RemoteResult, type SafeArtifactTransfer, type SafeCommand } from "./types.js";
+import { renderCommand, type RemoteExecutor, type RemoteResult, type SafeArtifactTransfer, type SafeCommand, type SafeSubmissionUpload } from "./types.js";
 
 interface KnownHostEntry { hosts: string[]; key: Buffer }
 
@@ -218,6 +218,51 @@ export class SshExecutor implements RemoteExecutor {
       }
       if (cause instanceof AgentError) throw cause;
       throw new AgentError("ARTIFACT_DOWNLOAD_FAILED", `Artifact download failed: ${(cause as Error).message}`, ExitCode.SshFailure);
+    } finally {
+      sftp.end();
+    }
+  }
+
+  async uploadSubmission({ content, remotePath, maxBytes }: SafeSubmissionUpload): Promise<{ bytes: number }> {
+    if (content.length > maxBytes) {
+      throw new AgentError("SCRIPT_TOO_LARGE", `Job script exceeds policy maximum ${maxBytes} bytes.`, ExitCode.PolicyDenied);
+    }
+    const client = await this.connect();
+    const sftp = await new Promise<SFTPWrapper>((resolve, reject) => {
+      client.sftp((error, session) => {
+        if (error) reject(new AgentError("SCRIPT_UPLOAD_FAILED", `Unable to start controlled script upload: ${error.message}`, ExitCode.SshFailure));
+        else resolve(session);
+      });
+    });
+    const temporaryPath = `${remotePath}.part-${randomUUID()}`;
+    let temporaryCreated = false;
+    try {
+      const output = sftp.createWriteStream(temporaryPath, { flags: "wx", mode: 0o700 });
+      await once(output, "open");
+      temporaryCreated = true;
+      const controller = new AbortController();
+      const uploadTimeout = setTimeout(() => controller.abort(), this.config.timeoutMs);
+      try {
+        await pipeline(Readable.from(content), output, { signal: controller.signal });
+      } catch (cause) {
+        if (controller.signal.aborted) {
+          throw new AgentError("REMOTE_COMMAND_TIMEOUT", "Job script upload timed out.", ExitCode.SshFailure);
+        }
+        throw cause;
+      } finally {
+        clearTimeout(uploadTimeout);
+      }
+      await new Promise<void>((resolve, reject) => {
+        sftp.rename(temporaryPath, remotePath, (error) => error ? reject(error) : resolve());
+      });
+      temporaryCreated = false;
+      return { bytes: content.length };
+    } catch (cause) {
+      if (temporaryCreated) {
+        await new Promise<void>((resolve) => sftp.unlink(temporaryPath, () => resolve()));
+      }
+      if (cause instanceof AgentError) throw cause;
+      throw new AgentError("SCRIPT_UPLOAD_FAILED", `Job script upload failed: ${(cause as Error).message}`, ExitCode.SshFailure);
     } finally {
       sftp.end();
     }

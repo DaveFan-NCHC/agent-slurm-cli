@@ -33,6 +33,7 @@ SLURM_SSH_USER
 SLURM_SSH_KEY_PATH
 SLURM_SSH_KNOWN_HOSTS or SLURM_SSH_HOST_FINGERPRINT
 SLURM_REMOTE_WORKSPACE
+SLURM_LOCAL_JOB_WORKSPACE   contains Agent-generated scripts
 SLURM_POLICY_PATH
 SLURM_LOCAL_ARTIFACTS     required for artifact downloads
 SLURM_AUDIT_LOG           optional; otherwise audit goes to stderr
@@ -44,19 +45,19 @@ Do not read or print credential files during ordinary operation. If configuratio
 
 ### Submit
 
-The script must already exist below `SLURM_REMOTE_WORKSPACE`; pass a safe workspace-relative POSIX path. Do not use `..`, an absolute path, shell syntax, or unexpected Slurm flags.
+The Agent may create a script below `SLURM_LOCAL_JOB_WORKSPACE`; pass its safe relative POSIX path as the first positional argument. The CLI validates and hashes it, then uploads it to a generated remote staging path. Do not use `..`, an absolute path, a symlink, or unexpected Slurm flags. Scripts must begin with a shebang and may not contain `#SBATCH` directives.
 
 ```bash
 slurm-agent submit \
-  --script jobs/example.sh \
-  --partition <allowed-partition> \
-  --nodes 1 \
-  --ntasks 4 \
-  --cpus-per-task 2 \
-  --memory 8G \
-  --time 01:00:00 \
+  -p <allowed-partition> \
+  -N 1 \
+  -n 4 \
+  -c 2 \
+  --mem 8G \
+  -t 01:00:00 \
+  -J example \
   --apptainer-image pytorch \
-  --job-name example
+  jobs/example.sh --epochs 20
 ```
 
 Defaults are one node, one task, one CPU per task, `1G`, and `01:00:00`. Resource values and the partition must remain within the configured policy. Record the returned `job_id`; use only that decimal ID in later commands.
@@ -68,7 +69,7 @@ slurm-agent submit ... --apptainer-image pytorch
 slurm-agent submit ... --venv project-a
 ```
 
-The options are mutually exclusive. Never pass a raw path, image URI, bind mount, environment override, or runtime command. Policy maps the alias to a fixed path; the CLI verifies it and exports `SLURM_AGENT_APPTAINER_IMAGE` or `SLURM_AGENT_VENV` to the predefined script. The script must consume the value explicitly, for example with `apptainer exec "$SLURM_AGENT_APPTAINER_IMAGE" ...` or `"$SLURM_AGENT_VENV/bin/python" ...`.
+The options are mutually exclusive. Never pass a raw path, image URI, bind mount, environment override, or runtime command. Policy maps the alias to a fixed path. By default an Apptainer alias is required, and a trusted CLI-generated runner forces the uploaded payload to execute inside that image with a clean environment, read-only workspace, and only that job's artifact directory writable. Do not add Apptainer commands to the payload merely to recreate this wrapper.
 
 Do not automatically retry an ambiguous failed submission, because the first submission might have reached Slurm. Inspect `list` once and ask for direction if the outcome cannot be established.
 
@@ -100,10 +101,10 @@ Cancellation changes external state. Run it only when the user has requested can
 
 ## Artifacts
 
-Submission exports `SLURM_AGENT_ARTIFACT_ROOT` into the job. A job script must place downloadable files beneath its own job-ID directory:
+Submission exports the job-specific `SLURM_AGENT_ARTIFACT_DIR` into the payload. A job script must place downloadable files beneath this directory:
 
 ```bash
-artifact_dir="$SLURM_AGENT_ARTIFACT_ROOT/$SLURM_JOB_ID"
+artifact_dir="$SLURM_AGENT_ARTIFACT_DIR"
 mkdir -p "$artifact_dir/results"
 cp model.bin "$artifact_dir/results/model.bin"
 ```

@@ -8,6 +8,8 @@ const keys = [
   "allowed_partitions", "max_nodes", "max_ntasks", "max_cpus_per_task",
   "max_memory_gb", "max_time_minutes", "max_log_lines", "max_log_bytes",
   "max_artifact_bytes", "allowed_apptainer_images", "allowed_virtualenvs",
+  "max_script_bytes", "max_script_args", "max_script_arg_length",
+  "require_apptainer_for_generated_scripts",
 ] as const;
 
 const aliasPattern = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
@@ -37,6 +39,14 @@ function fixedPathMap(value: unknown, key: string): Record<string, string> {
     result[alias] = path;
   }
   return result;
+}
+
+function booleanValue(value: unknown, key: string, defaultValue: boolean): boolean {
+  const resolved = value ?? defaultValue;
+  if (typeof resolved !== "boolean") {
+    throw new AgentError("CONFIGURATION_ERROR", `${key} must be true or false.`, ExitCode.General);
+  }
+  return resolved;
 }
 
 export function loadPolicy(path: string): Policy {
@@ -70,5 +80,13 @@ export function loadPolicy(path: string): Policy {
     maxArtifactBytes: positive(data.max_artifact_bytes, "max_artifact_bytes", 104857600),
     allowedApptainerImages: fixedPathMap(data.allowed_apptainer_images, "allowed_apptainer_images"),
     allowedVirtualenvs: fixedPathMap(data.allowed_virtualenvs, "allowed_virtualenvs"),
+    maxScriptBytes: positive(data.max_script_bytes, "max_script_bytes", 65536),
+    maxScriptArgs: positive(data.max_script_args, "max_script_args", 32),
+    maxScriptArgLength: positive(data.max_script_arg_length, "max_script_arg_length", 1024),
+    requireApptainerForGeneratedScripts: booleanValue(
+      data.require_apptainer_for_generated_scripts,
+      "require_apptainer_for_generated_scripts",
+      true,
+    ),
   };
 }

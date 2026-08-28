@@ -51,17 +51,19 @@ slurm-agent list
 slurm-agent status
 slurm-agent cancel
 slurm-agent logs
+slurm-agent artifact
 ```
 
 例如：
 
 ```bash
 slurm-agent submit \
-  --script jobs/test.sh \
   --partition slurm-test \
   --ntasks 4 \
-  --memory 8G \
-  --time 01:00:00
+  --mem 8G \
+  --time 01:00:00 \
+  --apptainer-image pytorch \
+  jobs/test.sh
 ```
 
 輸出必須預設為 structured JSON：
@@ -162,18 +164,18 @@ CLI user 不得自行指定任意 remote command。
 用途：
 
 ```text
-submit a predefined script
+submit an Agent-generated local script through controlled staging
 ```
 
 建議參數：
 
 ```text
---script
+SCRIPT (positional, below SLURM_LOCAL_JOB_WORKSPACE)
 --partition
 --nodes
 --ntasks
 --cpus-per-task
---memory
+--mem
 --time
 --job-name
 ```
@@ -182,9 +184,10 @@ submit a predefined script
 
 ```bash
 slurm-agent submit \
-  --script jobs/naca.sh \
   --partition slurm-test \
-  --ntasks 4
+  --ntasks 4 \
+  --apptainer-image pytorch \
+  jobs/naca.sh
 ```
 
 必須驗證：
@@ -196,7 +199,7 @@ maximum ntasks
 maximum CPUs
 maximum memory
 maximum walltime
-script path
+local script path, size, type, shebang, and absence of #SBATCH directives
 job name
 ```
 
@@ -317,7 +320,33 @@ workspace path containment
 
 ---
 
-# 7. Remote Workspace
+## `slurm-agent artifact`
+
+例如：
+
+```bash
+slurm-agent artifact 12345 --path results/model.bin
+```
+
+只能下載該 job 的固定 artifact 目錄內的單一檔案，並存到本機設定的 `SLURM_LOCAL_ARTIFACTS/<job-id>/`。不得讓 Agent 指定任意本機輸出路徑或覆寫既有檔案。
+
+---
+
+# 7. Local Script and Remote Workspace
+
+Agent 產生的腳本位於執行 CLI 的本機：
+
+```text
+SLURM_LOCAL_JOB_WORKSPACE=/var/lib/slurm-agent/jobs
+```
+
+若 Agent 指定 `jobs/test.sh`，只能讀取：
+
+```text
+/var/lib/slurm-agent/jobs/jobs/test.sh
+```
+
+CLI 驗證並 hash 腳本後，上傳到自行產生的遠端 staging path。Agent 不得指定遠端目的地。
 
 設定：
 
@@ -325,16 +354,10 @@ workspace path containment
 SLURM_REMOTE_WORKSPACE=/home/agent/workspace
 ```
 
-若 Agent 指定：
+遠端腳本只能存放於：
 
 ```text
-jobs/test.sh
-```
-
-只能 resolve 成：
-
-```text
-/home/agent/workspace/jobs/test.sh
+/home/agent/workspace/.slurm-agent/submissions/<uuid>/
 ```
 
 必須阻止：
@@ -344,6 +367,8 @@ jobs/test.sh
 ../../
 absolute external path
 symlink escape
+#SBATCH directives
+oversized script
 ```
 
 例如以下全部拒絕：
@@ -367,6 +392,9 @@ SLURM_SSH_USER
 SLURM_SSH_KEY_PATH
 SLURM_SSH_KNOWN_HOSTS
 SLURM_REMOTE_WORKSPACE
+SLURM_LOCAL_JOB_WORKSPACE
+SLURM_LOCAL_ARTIFACTS
+SLURM_REMOTE_APPTAINER_PATH
 ```
 
 Private key 本身不要放進 command arguments 或 config file。
@@ -805,6 +833,7 @@ slurm-agent list
 slurm-agent status ...
 slurm-agent logs ...
 slurm-agent cancel ...
+slurm-agent artifact ...
 ```
 
 都能正常使用。

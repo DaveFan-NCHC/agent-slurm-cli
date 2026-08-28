@@ -10,4 +10,8 @@ export interface Policy {
   maxArtifactBytes: number;
   allowedApptainerImages: Record<string, string>;
   allowedVirtualenvs: Record<string, string>;
+  maxScriptBytes: number;
+  maxScriptArgs: number;
+  maxScriptArgLength: number;
+  requireApptainerForGeneratedScripts: boolean;
 }

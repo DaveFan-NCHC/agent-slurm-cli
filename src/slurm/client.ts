@@ -1,10 +1,13 @@
+import { randomUUID } from "node:crypto";
 import { AgentError, ExitCode } from "../errors/errors.js";
 import { isContained, resolveLocalArtifactPath, resolveWorkspacePath } from "../policy/path.js";
+import type { PreparedScript } from "../policy/script.js";
 import type { NormalizedSubmit } from "../policy/validator.js";
 import type { Policy } from "../policy/types.js";
 import type { RemoteExecutor, RemoteResult, SafeCommand } from "../transport/types.js";
 import { parseAccountingJob, parseQueueJob, parseQueueList, parseSubmittedJobId } from "./parser.js";
 import type { ArtifactResult, JobSummary, LogResult, OwnedJob } from "./types.js";
+import { TRUSTED_RUNNER } from "./runner.js";
 
 function failure(result: RemoteResult, code: "SLURM_SUBMIT_FAILED" | "SLURM_QUERY_FAILED" | "SLURM_CANCEL_FAILED" | "SLURM_LOG_FAILED", message: string): never {
   throw new AgentError(code, message, ExitCode.SlurmFailure, { remote_exit_code: result.exitCode });
@@ -24,6 +27,7 @@ export class SlurmClient {
     private readonly workspace: string,
     private readonly policy: Policy,
     private readonly localArtifactsPath?: string,
+    private readonly remoteApptainerPath = "/usr/bin/apptainer",
   ) {}
 
   private async run(command: SafeCommand): Promise<RemoteResult> { return this.executor.run(command); }
@@ -87,22 +91,32 @@ export class SlurmClient {
     return job;
   }
 
-  async submit(options: NormalizedSubmit): Promise<string> {
-    const requested = resolveWorkspacePath(this.workspace, options.script);
-    const [workspaceReal, scriptReal] = await Promise.all([this.workspaceRealpath(), this.realpath(requested)]);
-    if (!scriptReal) throw new AgentError("SCRIPT_NOT_FOUND", "Script does not exist in the remote workspace.", ExitCode.PolicyDenied);
-    if (!isContained(workspaceReal, scriptReal)) {
-      throw new AgentError("PATH_NOT_ALLOWED", "Script resolves outside the remote workspace.", ExitCode.PolicyDenied);
+  async submit(options: NormalizedSubmit, script: PreparedScript): Promise<string> {
+    if (this.policy.requireApptainerForGeneratedScripts && !options.apptainerImagePath) {
+      throw new AgentError("RUNTIME_REQUIRED", "Policy requires an approved Apptainer image for agent-generated scripts.", ExitCode.PolicyDenied);
     }
-    const file = await this.run({ executable: "test", args: ["-f", "--", scriptReal] });
-    if (file.exitCode !== 0) throw new AgentError("SCRIPT_NOT_FOUND", "Script is not a regular file.", ExitCode.PolicyDenied);
+    const workspaceReal = await this.workspaceRealpath();
     const apptainerImageReal = options.apptainerImagePath
       ? await this.runtimePath(options.apptainerImagePath, "apptainer")
       : undefined;
     const venvReal = options.venvPath ? await this.runtimePath(options.venvPath, "venv") : undefined;
+    const apptainerExecutableReal = apptainerImageReal
+      ? await this.realpath(this.remoteApptainerPath)
+      : undefined;
+    if (apptainerImageReal && !apptainerExecutableReal) {
+      throw new AgentError("RUNTIME_NOT_FOUND", "Configured Apptainer executable does not exist.", ExitCode.General);
+    }
+    if (apptainerExecutableReal) {
+      validateExportPath(apptainerExecutableReal, "Apptainer executable");
+      const executable = await this.run({ executable: "test", args: ["-x", "--", apptainerExecutableReal] });
+      if (executable.exitCode !== 0) {
+        throw new AgentError("RUNTIME_NOT_FOUND", "Configured Apptainer executable is not executable.", ExitCode.General);
+      }
+    }
     const logDirectory = `${workspaceReal}/.slurm-agent/logs`;
     const artifactRoot = `${workspaceReal}/.slurm-agent/artifacts`;
-    const mkdir = await this.run({ executable: "mkdir", args: ["-p", "--", logDirectory, artifactRoot] });
+    const submissionDirectory = `${workspaceReal}/.slurm-agent/submissions/${randomUUID()}`;
+    const mkdir = await this.run({ executable: "mkdir", args: ["-p", "-m", "700", "--", logDirectory, artifactRoot, submissionDirectory] });
     if (mkdir.exitCode !== 0) failure(mkdir, "SLURM_SUBMIT_FAILED", "Unable to create controlled output directories.");
     const logDirectoryReal = await this.realpath(logDirectory);
     if (!logDirectoryReal || !isContained(workspaceReal, logDirectoryReal)) {
@@ -112,17 +126,34 @@ export class SlurmClient {
     if (!artifactRootReal || !isContained(workspaceReal, artifactRootReal)) {
       throw new AgentError("PATH_NOT_ALLOWED", "Artifact directory resolves outside the remote workspace.", ExitCode.PolicyDenied);
     }
+    const submissionDirectoryReal = await this.realpath(submissionDirectory);
+    if (!submissionDirectoryReal || !isContained(workspaceReal, submissionDirectoryReal)) {
+      throw new AgentError("PATH_NOT_ALLOWED", "Submission directory resolves outside the remote workspace.", ExitCode.PolicyDenied);
+    }
+    const payloadPath = `${submissionDirectoryReal}/payload`;
+    const runnerPath = `${submissionDirectoryReal}/runner`;
+    await this.executor.uploadSubmission({ content: script.content, remotePath: payloadPath, maxBytes: this.policy.maxScriptBytes });
+    const runner = Buffer.from(TRUSTED_RUNNER, "utf8");
+    await this.executor.uploadSubmission({ content: runner, remotePath: runnerPath, maxBytes: runner.length });
     const exportedEnvironment = [`SLURM_AGENT_ARTIFACT_ROOT=${artifactRootReal}`];
+    exportedEnvironment.push(`SLURM_AGENT_PAYLOAD=${payloadPath}`);
+    const runtimeKind = apptainerImageReal ? "apptainer" : venvReal ? "venv" : "host";
+    exportedEnvironment.push(`SLURM_AGENT_RUNTIME_KIND=${runtimeKind}`);
     if (apptainerImageReal) exportedEnvironment.push(`SLURM_AGENT_APPTAINER_IMAGE=${apptainerImageReal}`);
     if (venvReal) exportedEnvironment.push(`SLURM_AGENT_VENV=${venvReal}`);
+    if (apptainerExecutableReal) exportedEnvironment.push(`SLURM_AGENT_APPTAINER_EXECUTABLE=${apptainerExecutableReal}`);
+    if (apptainerImageReal) {
+      exportedEnvironment.push(`SLURM_AGENT_SUBMISSION_DIR=${submissionDirectoryReal}`);
+      exportedEnvironment.push(`SLURM_AGENT_WORKSPACE=${workspaceReal}`);
+    }
     const args = [
       "--parsable", `--chdir=${workspaceReal}`, `--partition=${options.partition}`, `--nodes=${options.nodes}`,
       `--ntasks=${options.ntasks}`, `--cpus-per-task=${options.cpusPerTask}`, `--mem=${options.memory}`,
       `--time=${options.time}`, `--output=${logDirectoryReal}/%j.out`, `--error=${logDirectoryReal}/%j.err`,
-      `--export=ALL,${exportedEnvironment.join(",")}`,
+      `--export=${exportedEnvironment.join(",")}`,
     ];
     if (options.jobName) args.push(`--job-name=${options.jobName}`);
-    args.push("--", scriptReal);
+    args.push("--", runnerPath, ...options.scriptArgs);
     const result = await this.run({ executable: "sbatch", args });
     if (result.exitCode !== 0) failure(result, "SLURM_SUBMIT_FAILED", "Slurm rejected the submission.");
     return parseSubmittedJobId(result.stdout);

@@ -1,6 +1,6 @@
 {
   "name": "@nchc/slurm-agent",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A constrained Slurm lifecycle CLI over verified SSH",
   "type": "module",
   "bin": {

@@ -11,16 +11,17 @@ import { runSubmit } from "./commands/submit.js";
 import { loadConfig } from "./config/loader.js";
 import { AgentError, ExitCode, invalid } from "./errors/errors.js";
 import { loadPolicy } from "./policy/loader.js";
+import { prepareLocalScript } from "./policy/script.js";
 import { parsePositiveInteger, validateJobId, validateSubmit, type SubmitOptions } from "./policy/validator.js";
 import { SlurmClient } from "./slurm/client.js";
 import { SshExecutor } from "./transport/ssh.js";
 import type { RemoteExecutor } from "./transport/types.js";
 
-const VERSION = "0.1.0";
+const VERSION = "0.2.0";
 const HELP = `slurm-agent ${VERSION}
 
 Usage:
-  slurm-agent submit --script PATH --partition NAME [options]
+  slurm-agent submit [options] SCRIPT [SCRIPT_ARGS...]
   slurm-agent list
   slurm-agent status JOB_ID
   slurm-agent cancel JOB_ID
@@ -28,12 +29,13 @@ Usage:
   slurm-agent artifact JOB_ID --path RELATIVE_PATH
 
 Submit options:
-  --nodes N             default: 1
-  --ntasks N            default: 1
-  --cpus-per-task N     default: 1
-  --memory SIZE         default: 1G
-  --time HH:MM:SS       default: 01:00:00
-  --job-name NAME
+  -p, --partition NAME  required; policy allowlist
+  -N, --nodes N         default: 1
+  -n, --ntasks N        default: 1
+  -c, --cpus-per-task N default: 1
+  --mem SIZE            default: 1G
+  -t, --time HH:MM:SS   default: 01:00:00
+  -J, --job-name NAME
   --apptainer-image ALIAS
   --venv ALIAS
 
@@ -50,17 +52,42 @@ function parseArgs(argv: string[]): Parsed {
   const command = argv[0]!;
   const positionals: string[] = [];
   const options = new Map<string, string>();
+  let positionalMode = false;
+  const shortOptions: Record<string, string> = { "-p": "partition", "-N": "nodes", "-n": "ntasks", "-c": "cpus-per-task", "-t": "time", "-J": "job-name" };
   for (let index = 1; index < argv.length; index += 1) {
     const token = argv[index]!;
-    if (!token.startsWith("--")) { positionals.push(token); continue; }
+    if (positionalMode) { positionals.push(token); continue; }
+    if (token === "--") { positionalMode = true; continue; }
+    if (shortOptions[token]) {
+      const value = argv[++index];
+      if (value === undefined || value.startsWith("-")) throw invalid(`Option ${token} requires a value.`);
+      const key = shortOptions[token]!;
+      if (options.has(key)) throw invalid(`Option --${key} may only be specified once.`);
+      options.set(key, value);
+      continue;
+    }
+    if (!token.startsWith("--")) {
+      positionals.push(token);
+      if (command === "submit") positionalMode = true;
+      continue;
+    }
     const equals = token.indexOf("=");
-    const key = equals >= 0 ? token.slice(2, equals) : token.slice(2);
+    const rawKey = equals >= 0 ? token.slice(2, equals) : token.slice(2);
+    const key = rawKey === "memory" ? "mem" : rawKey;
     const value = equals >= 0 ? token.slice(equals + 1) : argv[++index];
     if (!key || value === undefined || (equals < 0 && value.startsWith("--"))) throw invalid(`Option --${key} requires a value.`);
     if (options.has(key)) throw invalid(`Option --${key} may only be specified once.`);
     options.set(key, value);
   }
   return { command, positionals, options };
+}
+
+const submitOptions = ["partition", "nodes", "ntasks", "cpus-per-task", "mem", "time", "job-name", "apptainer-image", "venv"];
+
+function enforceSubmitShape(parsed: Parsed): void {
+  const unknown = [...parsed.options.keys()].filter((key) => !submitOptions.includes(key));
+  if (unknown.length) throw invalid(`Unknown option(s): ${unknown.map((key) => `--${key}`).join(", ")}.`);
+  if (parsed.positionals.length < 1) throw invalid("Command submit requires a local SCRIPT path.");
 }
 
 function enforceShape(parsed: Parsed, allowedOptions: string[], positionalCount: number): void {
@@ -72,7 +99,7 @@ function enforceShape(parsed: Parsed, allowedOptions: string[], positionalCount:
 function prevalidateShape(parsed: Parsed): void {
   switch (parsed.command) {
     case "submit":
-      enforceShape(parsed, ["script", "partition", "nodes", "ntasks", "cpus-per-task", "memory", "time", "job-name", "apptainer-image", "venv"], 0);
+      enforceSubmitShape(parsed);
       break;
     case "list":
       enforceShape(parsed, [], 0);
@@ -105,18 +132,19 @@ function requiredOption(options: Map<string, string>, name: string): string {
 }
 
 function parseSubmit(parsed: Parsed, policy: ReturnType<typeof loadPolicy>): ReturnType<typeof validateSubmit> {
-  enforceShape(parsed, ["script", "partition", "nodes", "ntasks", "cpus-per-task", "memory", "time", "job-name", "apptainer-image", "venv"], 0);
+  enforceSubmitShape(parsed);
   const options: SubmitOptions = {
-    script: requiredOption(parsed.options, "script"),
+    script: parsed.positionals[0]!,
     partition: requiredOption(parsed.options, "partition"),
     nodes: parsePositiveInteger(parsed.options.get("nodes") ?? "1", "--nodes"),
     ntasks: parsePositiveInteger(parsed.options.get("ntasks") ?? "1", "--ntasks"),
     cpusPerTask: parsePositiveInteger(parsed.options.get("cpus-per-task") ?? "1", "--cpus-per-task"),
-    memory: parsed.options.get("memory") ?? "1G",
+    memory: parsed.options.get("mem") ?? "1G",
     time: parsed.options.get("time") ?? "01:00:00",
     jobName: parsed.options.get("job-name"),
     apptainerImage: parsed.options.get("apptainer-image"),
     venv: parsed.options.get("venv"),
+    scriptArgs: parsed.positionals.slice(1),
   };
   return validateSubmit(options, policy);
 }
@@ -151,7 +179,10 @@ export async function main(
     sshUser = config.ssh.user;
     audit = new AuditLogger(config.auditLogPath, stderr);
     executor = executorFactory(config.ssh);
-    const client = new SlurmClient(executor, config.ssh.user, config.ssh.workspace, policy, config.localArtifactsPath);
+    const client = new SlurmClient(
+      executor, config.ssh.user, config.ssh.workspace, policy,
+      config.localArtifactsPath, config.remoteApptainerPath,
+    );
     const context = { client, audit, sshUser: config.ssh.user };
     let response: Record<string, unknown>;
     switch (parsed.command) {
@@ -184,10 +215,12 @@ export async function main(
         auditResources = {
           partition: parsed.options.get("partition"), nodes: parsed.options.get("nodes") ?? "1",
           ntasks: parsed.options.get("ntasks") ?? "1", cpus_per_task: parsed.options.get("cpus-per-task") ?? "1",
-          memory: parsed.options.get("memory") ?? "1G", time: parsed.options.get("time") ?? "01:00:00",
+          memory: parsed.options.get("mem") ?? "1G", time: parsed.options.get("time") ?? "01:00:00",
           apptainer_image: parsed.options.get("apptainer-image"), venv: parsed.options.get("venv"),
         };
-        response = await runSubmit(context, parseSubmit(parsed, policy));
+        const submitOptions = parseSubmit(parsed, policy);
+        const preparedScript = prepareLocalScript(config.localJobWorkspace, submitOptions.script, policy);
+        response = await runSubmit(context, submitOptions, preparedScript);
         break;
       case "artifact": {
         jobId = validateJobId(parsed.positionals[0]!);

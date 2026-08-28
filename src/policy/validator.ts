@@ -12,6 +12,7 @@ export interface SubmitOptions {
   jobName?: string;
   apptainerImage?: string;
   venv?: string;
+  scriptArgs: string[];
 }
 
 export interface NormalizedSubmit extends SubmitOptions {
@@ -40,10 +41,10 @@ export function parsePositiveInteger(text: string, option: string): number {
 
 export function parseMemoryGb(text: string): number {
   const match = /^(\d+)([KMGTP])$/i.exec(text);
-  if (!match) throw invalid("--memory must use an integer followed by K, M, G, T, or P.");
+  if (!match) throw invalid("--mem must use an integer followed by K, M, G, T, or P.");
   const amount = Number(match[1]);
   const unit = match[2]!.toUpperCase();
-  if (!Number.isSafeInteger(amount) || amount <= 0) throw invalid("--memory must be positive.");
+  if (!Number.isSafeInteger(amount) || amount <= 0) throw invalid("--mem must be positive.");
   const multipliers: Record<string, number> = { K: 1 / 1024 / 1024, M: 1 / 1024, G: 1, T: 1024, P: 1024 * 1024 };
   return amount * multipliers[unit]!;
 }
@@ -85,6 +86,20 @@ export function validateSubmit(options: SubmitOptions, policy: Policy): Normaliz
   }
   const apptainerImagePath = resolveRuntimeAlias(options.apptainerImage, policy.allowedApptainerImages, "Apptainer image");
   const venvPath = resolveRuntimeAlias(options.venv, policy.allowedVirtualenvs, "Virtual environment");
+  if (policy.requireApptainerForGeneratedScripts && !apptainerImagePath) {
+    throw policyDenied("RUNTIME_REQUIRED", "Policy requires an approved Apptainer image for agent-generated scripts.");
+  }
+  if (options.scriptArgs.length > policy.maxScriptArgs) {
+    throw policyDenied("RESOURCE_LIMIT_EXCEEDED", `Script arguments exceed policy maximum ${policy.maxScriptArgs}.`);
+  }
+  for (const argument of options.scriptArgs) {
+    if (argument.includes("\0") || argument.includes("\n") || argument.includes("\r")) {
+      throw invalid("Script arguments may not contain control characters.");
+    }
+    if (Buffer.byteLength(argument, "utf8") > policy.maxScriptArgLength) {
+      throw policyDenied("RESOURCE_LIMIT_EXCEEDED", `A script argument exceeds policy maximum ${policy.maxScriptArgLength} bytes.`);
+    }
+  }
   const limits: Array<[number, number, string]> = [
     [options.nodes, policy.maxNodes, "nodes"], [options.ntasks, policy.maxNtasks, "ntasks"],
     [options.cpusPerTask, policy.maxCpusPerTask, "cpus-per-task"],

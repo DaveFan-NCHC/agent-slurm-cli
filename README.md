@@ -30,7 +30,7 @@ slurm-agent --version
 For production, publish and install a pinned version during image/host bootstrap:
 
 ```bash
-npm install -g @nchc/slurm-agent@0.1.0
+npm install -g @nchc/slurm-agent@0.2.0
 command -v slurm-agent
 ```
 
@@ -47,7 +47,9 @@ export SLURM_SSH_USER=slurm-agent
 export SLURM_SSH_KEY_PATH=/run/secrets/slurm-agent-key
 export SLURM_SSH_KNOWN_HOSTS=/etc/slurm-agent/known_hosts
 export SLURM_REMOTE_WORKSPACE=/home/slurm-agent/workspace
+export SLURM_LOCAL_JOB_WORKSPACE=/var/lib/slurm-agent/jobs
 export SLURM_LOCAL_ARTIFACTS=/var/lib/slurm-agent/artifacts
+export SLURM_REMOTE_APPTAINER_PATH=/usr/bin/apptainer
 export SLURM_POLICY_PATH=/etc/slurm-agent/policy.yaml
 export SLURM_AUDIT_LOG=/var/log/slurm-agent/audit.jsonl
 ```
@@ -63,6 +65,10 @@ allowed_apptainer_images:
   pytorch: /opt/apptainer/pytorch.sif
 allowed_virtualenvs:
   project-a: /home/agent/venvs/project-a
+max_script_bytes: 65536
+max_script_args: 32
+max_script_arg_length: 1024
+require_apptainer_for_generated_scripts: true
 ```
 
 The alias is accepted from the CLI; a raw image or virtualenv path is not.
@@ -71,19 +77,19 @@ The configured SSH account should also be restricted at the cluster and filesyst
 
 ## Usage
 
-Scripts already present below `SLURM_REMOTE_WORKSPACE` can be submitted by relative path:
+Agent-generated scripts are read from `SLURM_LOCAL_JOB_WORKSPACE`, uploaded to a CLI-generated staging directory below `SLURM_REMOTE_WORKSPACE`, and submitted through a trusted runner. The interface follows the safe subset of `sbatch`:
 
 ```bash
 slurm-agent submit \
-  --script jobs/naca.sh \
-  --partition slurm-test \
-  --nodes 1 \
-  --ntasks 4 \
-  --cpus-per-task 2 \
-  --memory 8G \
-  --time 01:00:00 \
+  -p slurm-test \
+  -N 1 \
+  -n 4 \
+  -c 2 \
+  --mem 8G \
+  -t 01:00:00 \
+  -J naca \
   --apptainer-image pytorch \
-  --job-name naca
+  jobs/naca.sh --mesh fine
 ```
 
 ```json
@@ -93,21 +99,19 @@ slurm-agent submit \
 Choose at most one runtime alias per submission:
 
 ```bash
-slurm-agent submit --script jobs/train.sh --partition slurm-test --apptainer-image pytorch
-slurm-agent submit --script jobs/train.sh --partition slurm-test --venv project-a
+slurm-agent submit -p slurm-test --apptainer-image pytorch jobs/train.sh
+slurm-agent submit -p slurm-test --venv project-a jobs/train.sh
 ```
 
-The CLI resolves and verifies the fixed policy path, then exports either `SLURM_AGENT_APPTAINER_IMAGE` or `SLURM_AGENT_VENV`. It does not execute a caller-provided container command. The predefined job script consumes the selected runtime explicitly:
+With the default secure policy, agent-generated scripts require an approved Apptainer alias. The CLI-generated runner forces execution through `--containall` and `--cleanenv`, mounts the remote workspace read-only, and mounts only that job's controlled artifact directory read-write. The agent script does not invoke Apptainer itself:
 
 ```bash
-if [ -n "${SLURM_AGENT_APPTAINER_IMAGE:-}" ]; then
-  exec apptainer exec "$SLURM_AGENT_APPTAINER_IMAGE" python train.py
-fi
-
-if [ -n "${SLURM_AGENT_VENV:-}" ]; then
-  exec "$SLURM_AGENT_VENV/bin/python" train.py
-fi
+#!/bin/sh
+set -eu
+python train.py "$@"
 ```
+
+The script must be valid UTF-8, begin with a shebang, fit the policy size limit, and contain no `#SBATCH` directives. Scheduler resources must be expressed through CLI options. Virtualenv-only or direct host execution is not a security sandbox and is available only when an operator sets `require_apptainer_for_generated_scripts: false`.
 
 Other operations:
 
@@ -123,10 +127,10 @@ Submissions always set output files to `.slurm-agent/logs/%j.out` and `%j.err` u
 
 ### Job artifacts
 
-`submit` supplies `SLURM_AGENT_ARTIFACT_ROOT` to the job. A job places downloadable files in its own ID directory:
+`submit` supplies the job-specific `SLURM_AGENT_ARTIFACT_DIR` to the payload. A job places downloadable files directly below it:
 
 ```bash
-artifact_dir="$SLURM_AGENT_ARTIFACT_ROOT/$SLURM_JOB_ID"
+artifact_dir="$SLURM_AGENT_ARTIFACT_DIR"
 mkdir -p "$artifact_dir/results"
 cp model.bin "$artifact_dir/results/model.bin"
 ```
@@ -167,13 +171,18 @@ Errors retain a stable machine-readable code, for example:
 - Every remote command consists of a compile-time executable allowlist plus separately shell-quoted arguments; no shell fragments are accepted.
 - Job IDs, partition names, script segments, job names, resource units, and times use strict grammars. Unknown flags and duplicate flags are rejected.
 - Runtime selection accepts only policy-defined logical aliases. Apptainer images must resolve to regular files; virtual environments must contain an executable `bin/python`. Raw runtime paths, image URIs, bind mounts, and caller-provided commands are unavailable.
+- Agent scripts come only from `SLURM_LOCAL_JOB_WORKSPACE`; symlinks, traversal, oversized files, invalid UTF-8, missing shebangs, and embedded `#SBATCH` directives are rejected. The exact bytes are hashed before upload.
+- Upload destinations are random, CLI-generated directories below `.slurm-agent/submissions`; callers cannot select a remote destination. Payload and trusted runner uploads use temporary files followed by atomic rename.
+- The batch environment exports only controlled `SLURM_AGENT_*` values, not the complete SSH process environment.
 - `cancel`, `status`, `logs`, and `artifact` confirm that Slurm reports the configured user as owner.
 - Script and log paths are checked with remote `realpath`, preventing traversal and symlink escape.
 - Artifact transfer is an internal, single-file SFTP stream after remote containment checks; it is not an SFTP browser. The destination is derived from trusted configuration and the job ID, and is created without overwrite.
 - Audit records never contain private keys, credentials, command stderr, or environment values.
 - The remote host needs GNU-compatible `realpath`, `test`, `mkdir`, and `tail`, plus `sbatch`, `squeue`, `sacct`, and `scancel` in its non-interactive PATH.
+- Cluster-wide enforcement still belongs in Slurm configuration such as account/QOS limits and `job_submit` policy; the CLI policy is an additional capability boundary, not a replacement for scheduler controls.
 - Completed-job lookup depends on Slurm accounting (`sacct`) retention and permissions. If no allocation record is visible, the CLI reports `JOB_NOT_FOUND`.
 - SSH certificates, encrypted private keys requiring an interactive passphrase, wildcard/hashed `known_hosts` entries, job arrays, and federation IDs are not supported in this first release.
+- Submitted staging directories are retained for reproducibility in this release; production deployments should apply an operator-controlled retention policy.
 
 ## Development
 

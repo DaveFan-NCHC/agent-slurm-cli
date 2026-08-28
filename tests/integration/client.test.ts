@@ -9,11 +9,14 @@ const policy: Policy = {
   maxArtifactBytes: 4096,
   allowedApptainerImages: { pytorch: "/opt/apptainer/pytorch.sif" },
   allowedVirtualenvs: { "project-a": "/opt/venvs/project-a" },
+  maxScriptBytes: 65536, maxScriptArgs: 32, maxScriptArgLength: 1024,
+  requireApptainerForGeneratedScripts: false,
 };
 
 class MockExecutor implements RemoteExecutor {
   readonly commands: SafeCommand[] = [];
   readonly downloads: Array<{ remotePath: string; localPath: string; maxBytes: number }> = [];
+  readonly uploads: Array<{ remotePath: string; content: Buffer; maxBytes: number }> = [];
   constructor(private readonly results: RemoteResult[]) {}
   async run(command: SafeCommand): Promise<RemoteResult> {
     this.commands.push(command);
@@ -25,106 +28,107 @@ class MockExecutor implements RemoteExecutor {
     this.downloads.push({ remotePath, localPath, maxBytes });
     return { bytes: 5 };
   }
+  async uploadSubmission({ remotePath, content, maxBytes }: { remotePath: string; content: Buffer; maxBytes: number }): Promise<{ bytes: number }> {
+    this.uploads.push({ remotePath, content, maxBytes });
+    return { bytes: content.length };
+  }
   async close(): Promise<void> {}
 }
 
 const ok = (stdout = ""): RemoteResult => ({ stdout, stderr: "", exitCode: 0 });
+const prepared = { content: Buffer.from("#!/bin/sh\necho ok\n"), relativePath: "jobs/test.sh", sha256: "abc123" };
 
 describe("Slurm client security boundaries", () => {
   it("constructs submit from validated fields and fixed log paths", async () => {
     const remote = new MockExecutor([
-      ok("/work\n"), ok("/work/jobs/test.sh\n"), ok(), ok(), ok("/work/.slurm-agent/logs\n"),
-      ok("/work/.slurm-agent/artifacts\n"), ok("12345;cluster\n"),
+      ok("/work\n"), ok(), ok("/work/.slurm-agent/logs\n"),
+      ok("/work/.slurm-agent/artifacts\n"), ok("/work/.slurm-agent/submissions/staged\n"), ok("12345;cluster\n"),
     ]);
     const client = new SlurmClient(remote, "alice", "/work", policy);
     await expect(client.submit({
       script: "jobs/test.sh", partition: "slurm-test", nodes: 1, ntasks: 4, cpusPerTask: 2,
       memory: "8G", time: "01:00:00", jobName: "test", memoryGb: 8, timeMinutes: 60,
-    })).resolves.toBe("12345");
+      scriptArgs: ["--epochs", "20"],
+    }, prepared)).resolves.toBe("12345");
     const submit = remote.commands.at(-1)!;
     expect(submit.executable).toBe("sbatch");
     expect(submit.args).toContain("--output=/work/.slurm-agent/logs/%j.out");
-    expect(submit.args).toContain("--export=ALL,SLURM_AGENT_ARTIFACT_ROOT=/work/.slurm-agent/artifacts");
-    expect(submit.args.at(-1)).toBe("/work/jobs/test.sh");
+    expect(submit.args.find((argument) => argument.startsWith("--export="))).not.toContain("ALL");
+    expect(submit.args.slice(-2)).toEqual(["--epochs", "20"]);
+    expect(remote.uploads).toHaveLength(2);
+    expect(remote.uploads[0]?.remotePath).toBe("/work/.slurm-agent/submissions/staged/payload");
   });
 
   it("exports a policy-resolved Apptainer image", async () => {
     const remote = new MockExecutor([
-      ok("/work\n"), ok("/work/jobs/test.sh\n"), ok(),
-      ok("/opt/apptainer/pytorch.sif\n"), ok(), ok(),
-      ok("/work/.slurm-agent/logs\n"), ok("/work/.slurm-agent/artifacts\n"), ok("12345\n"),
+      ok("/work\n"), ok("/opt/apptainer/pytorch.sif\n"), ok(),
+      ok("/usr/bin/apptainer\n"), ok(), ok(), ok("/work/.slurm-agent/logs\n"),
+      ok("/work/.slurm-agent/artifacts\n"), ok("/work/.slurm-agent/submissions/staged\n"), ok("12345\n"),
     ]);
     const client = new SlurmClient(remote, "alice", "/work", policy);
     await client.submit({
       script: "jobs/test.sh", partition: "slurm-test", nodes: 1, ntasks: 1, cpusPerTask: 1,
       memory: "1G", time: "00:10:00", memoryGb: 1, timeMinutes: 10,
       apptainerImage: "pytorch", apptainerImagePath: "/opt/apptainer/pytorch.sif",
-    });
-    expect(remote.commands.at(-1)?.args).toContain(
-      "--export=ALL,SLURM_AGENT_ARTIFACT_ROOT=/work/.slurm-agent/artifacts,SLURM_AGENT_APPTAINER_IMAGE=/opt/apptainer/pytorch.sif",
-    );
+      scriptArgs: [],
+    }, prepared);
+    const exported = remote.commands.at(-1)?.args.find((argument) => argument.startsWith("--export="));
+    expect(exported).toContain("SLURM_AGENT_APPTAINER_IMAGE=/opt/apptainer/pytorch.sif");
+    expect(exported).toContain("SLURM_AGENT_APPTAINER_EXECUTABLE=/usr/bin/apptainer");
+    expect(exported).not.toContain("ALL");
   });
 
   it("exports a policy-resolved virtual environment after validating bin/python", async () => {
     const remote = new MockExecutor([
-      ok("/work\n"), ok("/work/jobs/test.sh\n"), ok(),
-      ok("/opt/venvs/project-a\n"), ok(), ok(), ok(),
-      ok("/work/.slurm-agent/logs\n"), ok("/work/.slurm-agent/artifacts\n"), ok("12345\n"),
+      ok("/work\n"), ok("/opt/venvs/project-a\n"), ok(), ok(), ok(),
+      ok("/work/.slurm-agent/logs\n"), ok("/work/.slurm-agent/artifacts\n"),
+      ok("/work/.slurm-agent/submissions/staged\n"), ok("12345\n"),
     ]);
     const client = new SlurmClient(remote, "alice", "/work", policy);
     await client.submit({
       script: "jobs/test.sh", partition: "slurm-test", nodes: 1, ntasks: 1, cpusPerTask: 1,
       memory: "1G", time: "00:10:00", memoryGb: 1, timeMinutes: 10,
       venv: "project-a", venvPath: "/opt/venvs/project-a",
-    });
+      scriptArgs: [],
+    }, prepared);
     expect(remote.commands).toContainEqual({ executable: "test", args: ["-x", "--", "/opt/venvs/project-a/bin/python"] });
-    expect(remote.commands.at(-1)?.args).toContain(
-      "--export=ALL,SLURM_AGENT_ARTIFACT_ROOT=/work/.slurm-agent/artifacts,SLURM_AGENT_VENV=/opt/venvs/project-a",
-    );
+    expect(remote.commands.at(-1)?.args.find((argument) => argument.startsWith("--export=")))
+      .toContain("SLURM_AGENT_VENV=/opt/venvs/project-a");
   });
 
   it("rejects a missing policy-resolved runtime before sbatch", async () => {
-    const remote = new MockExecutor([ok("/work\n"), ok("/work/jobs/test.sh\n"), ok(), { ...ok(), exitCode: 1 }]);
+    const remote = new MockExecutor([ok("/work\n"), { ...ok(), exitCode: 1 }]);
     const client = new SlurmClient(remote, "alice", "/work", policy);
     await expect(client.submit({
       script: "jobs/test.sh", partition: "slurm-test", nodes: 1, ntasks: 1, cpusPerTask: 1,
       memory: "1G", time: "00:10:00", memoryGb: 1, timeMinutes: 10,
       apptainerImage: "pytorch", apptainerImagePath: "/opt/apptainer/pytorch.sif",
-    })).rejects.toMatchObject({ code: "RUNTIME_NOT_FOUND" });
-    expect(remote.commands.some((command) => command.executable === "sbatch")).toBe(false);
-  });
-
-  it("rejects a script symlink that resolves outside workspace", async () => {
-    const remote = new MockExecutor([ok("/work\n"), ok("/etc/passwd\n")]);
-    const client = new SlurmClient(remote, "alice", "/work", policy);
-    await expect(client.submit({
-      script: "jobs/test.sh", partition: "slurm-test", nodes: 1, ntasks: 1, cpusPerTask: 1,
-      memory: "1G", time: "00:10:00", memoryGb: 1, timeMinutes: 10,
-    })).rejects.toMatchObject({ code: "PATH_NOT_ALLOWED" });
+      scriptArgs: [],
+    }, prepared)).rejects.toMatchObject({ code: "RUNTIME_NOT_FOUND" });
     expect(remote.commands.some((command) => command.executable === "sbatch")).toBe(false);
   });
 
   it("rejects a log-directory symlink that resolves outside workspace", async () => {
     const remote = new MockExecutor([
-      ok("/work\n"), ok("/work/jobs/test.sh\n"), ok(), ok(), ok("/tmp/stolen-logs\n"),
+      ok("/work\n"), ok(), ok("/tmp/stolen-logs\n"),
     ]);
     const client = new SlurmClient(remote, "alice", "/work", policy);
     await expect(client.submit({
       script: "jobs/test.sh", partition: "slurm-test", nodes: 1, ntasks: 1, cpusPerTask: 1,
-      memory: "1G", time: "00:10:00", memoryGb: 1, timeMinutes: 10,
-    })).rejects.toMatchObject({ code: "PATH_NOT_ALLOWED" });
+      memory: "1G", time: "00:10:00", memoryGb: 1, timeMinutes: 10, scriptArgs: [],
+    }, prepared)).rejects.toMatchObject({ code: "PATH_NOT_ALLOWED" });
     expect(remote.commands.some((command) => command.executable === "sbatch")).toBe(false);
   });
 
   it("rejects an artifact-directory symlink that resolves outside workspace", async () => {
     const remote = new MockExecutor([
-      ok("/work\n"), ok("/work/jobs/test.sh\n"), ok(), ok(), ok("/work/.slurm-agent/logs\n"), ok("/tmp/artifacts\n"),
+      ok("/work\n"), ok(), ok("/work/.slurm-agent/logs\n"), ok("/tmp/artifacts\n"),
     ]);
     const client = new SlurmClient(remote, "alice", "/work", policy);
     await expect(client.submit({
       script: "jobs/test.sh", partition: "slurm-test", nodes: 1, ntasks: 1, cpusPerTask: 1,
-      memory: "1G", time: "00:10:00", memoryGb: 1, timeMinutes: 10,
-    })).rejects.toMatchObject({ code: "PATH_NOT_ALLOWED" });
+      memory: "1G", time: "00:10:00", memoryGb: 1, timeMinutes: 10, scriptArgs: [],
+    }, prepared)).rejects.toMatchObject({ code: "PATH_NOT_ALLOWED" });
     expect(remote.commands.some((command) => command.executable === "sbatch")).toBe(false);
   });
 

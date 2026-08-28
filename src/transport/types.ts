@@ -21,9 +21,16 @@ export interface SafeArtifactTransfer {
   maxBytes: number;
 }
 
+export interface SafeSubmissionUpload {
+  content: Buffer;
+  remotePath: string;
+  maxBytes: number;
+}
+
 export interface RemoteExecutor {
   run(command: SafeCommand): Promise<RemoteResult>;
   downloadArtifact(transfer: SafeArtifactTransfer): Promise<{ bytes: number }>;
+  uploadSubmission(upload: SafeSubmissionUpload): Promise<{ bytes: number }>;
   close(): Promise<void>;
 }
 

@@ -17,12 +17,22 @@ export interface AppConfig {
   policyPath: string;
   auditLogPath?: string;
   localArtifactsPath?: string;
+  localJobWorkspace?: string;
+  remoteApptainerPath: string;
 }
 
 function required(env: NodeJS.ProcessEnv, name: string): string {
   const value = env[name]?.trim();
   if (!value) throw new AgentError("CONFIGURATION_ERROR", `${name} is required.`, ExitCode.General);
   return value;
+}
+
+function safeRemotePath(value: string, name: string): string {
+  const normalized = value.replace(/\/+$/, "");
+  if (!/^\/[A-Za-z0-9_./+-]+$/.test(normalized) || normalized.split("/").includes("..")) {
+    throw new AgentError("CONFIGURATION_ERROR", `${name} must be a safe absolute POSIX path.`, ExitCode.General);
+  }
+  return normalized;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
@@ -52,10 +62,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   } catch (cause) {
     throw new AgentError("CONFIGURATION_ERROR", `SSH credential or known_hosts file is not readable: ${(cause as Error).message}`, ExitCode.General);
   }
-  const workspace = required(env, "SLURM_REMOTE_WORKSPACE").replace(/\/+$/, "");
-  if (!workspace.startsWith("/") || workspace === "") {
-    throw new AgentError("CONFIGURATION_ERROR", "SLURM_REMOTE_WORKSPACE must be an absolute path.", ExitCode.General);
-  }
+  const workspace = safeRemotePath(required(env, "SLURM_REMOTE_WORKSPACE"), "SLURM_REMOTE_WORKSPACE");
   return {
     ssh: {
       host: required(env, "SLURM_SSH_HOST"),
@@ -70,5 +77,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     policyPath: env.SLURM_POLICY_PATH?.trim() || "./slurm-agent-policy.yaml",
     auditLogPath: env.SLURM_AUDIT_LOG?.trim() || undefined,
     localArtifactsPath: env.SLURM_LOCAL_ARTIFACTS?.trim() || undefined,
+    localJobWorkspace: env.SLURM_LOCAL_JOB_WORKSPACE?.trim() || undefined,
+    remoteApptainerPath: safeRemotePath(
+      env.SLURM_REMOTE_APPTAINER_PATH?.trim() || "/usr/bin/apptainer",
+      "SLURM_REMOTE_APPTAINER_PATH",
+    ),
   };
 }

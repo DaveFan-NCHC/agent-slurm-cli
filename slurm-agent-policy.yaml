@@ -12,3 +12,7 @@ allowed_apptainer_images:
   pytorch: /opt/apptainer/pytorch.sif
 allowed_virtualenvs:
   project-a: /home/agent/venvs/project-a
+max_script_bytes: 65536
+max_script_args: 32
+max_script_arg_length: 1024
+require_apptainer_for_generated_scripts: true

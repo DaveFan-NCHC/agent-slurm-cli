@@ -12,11 +12,14 @@ const policy: Policy = {
   maxArtifactBytes: 104857600,
   allowedApptainerImages: { pytorch: "/opt/apptainer/pytorch.sif" },
   allowedVirtualenvs: { "project-a": "/opt/venvs/project-a" },
+  maxScriptBytes: 65536, maxScriptArgs: 32, maxScriptArgLength: 1024,
+  requireApptainerForGeneratedScripts: false,
 };
 
 const valid = {
   script: "jobs/test.sh", partition: "slurm-test", nodes: 1, ntasks: 4,
   cpusPerTask: 2, memory: "8G", time: "01:00:00", jobName: "test-job",
+  scriptArgs: [],
 };
 
 describe("workspace paths", () => {
@@ -66,6 +69,15 @@ describe("resource policy", () => {
   });
   it("rejects simultaneous Apptainer and virtualenv selection", () => {
     expect(() => validateSubmit({ ...valid, apptainerImage: "pytorch", venv: "project-a" }, policy)).toThrow();
+  });
+  it("can require an approved Apptainer runtime", () => {
+    expect(() => validateSubmit(valid, { ...policy, requireApptainerForGeneratedScripts: true }))
+      .toThrowError(expect.objectContaining({ code: "RUNTIME_REQUIRED" }));
+  });
+  it("validates script argument count, size, and control characters", () => {
+    expect(() => validateSubmit({ ...valid, scriptArgs: new Array(33).fill("x") }, policy)).toThrow();
+    expect(() => validateSubmit({ ...valid, scriptArgs: ["x".repeat(1025)] }, policy)).toThrow();
+    expect(() => validateSubmit({ ...valid, scriptArgs: ["a\nb"] }, policy)).toThrow();
   });
   it.each([
     [{ ...valid, nodes: 3 }, "RESOURCE_LIMIT_EXCEEDED"],
