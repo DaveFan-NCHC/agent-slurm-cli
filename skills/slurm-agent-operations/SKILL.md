@@ -41,6 +41,16 @@ SLURM_AUDIT_LOG           optional; otherwise audit goes to stderr
 
 Do not read or print credential files during ordinary operation. If configuration is missing, report the named missing setting without inventing a value.
 
+### Remote path visibility
+
+`SLURM_REMOTE_WORKSPACE` must be a shared filesystem mounted at the same absolute path on the login node and all eligible compute nodes. Its `.slurm-agent/submissions`, logs, and artifacts are consumed on both sides.
+
+Policy-mapped Apptainer images and virtual environments must also be available with the same content at the same absolute path on the login and compute nodes. Shared storage is preferred, although identical per-node copies work. `SLURM_REMOTE_APPTAINER_PATH` may be node-local, but the executable must exist at that same path on every relevant node.
+
+The CLI validates these paths only on the login node. If submission succeeds but the runner, image, virtual environment, log, or artifact path is missing when the job starts, report a likely compute-node mount/path mismatch to the operator; do not bypass the policy with another raw path.
+
+Local CLI paths—including `SLURM_LOCAL_JOB_WORKSPACE`, `SLURM_LOCAL_ARTIFACTS`, SSH key/known-hosts files, policy, and audit log—do not need to be mounted on Slurm nodes.
+
 ## Job lifecycle
 
 ### Submit

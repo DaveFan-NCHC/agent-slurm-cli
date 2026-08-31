@@ -9,6 +9,9 @@ max_time_minutes: 240
 max_log_lines: 1000
 max_log_bytes: 1048576
 max_artifact_bytes: 104857600
+# Runtime paths are remote paths. They must expose the same content at the same
+# absolute path on the login node and every compute node that may run the job.
+# Shared storage is recommended; identical per-node installations also work.
 allowed_apptainer_images:
   pytorch: /opt/apptainer/pytorch.sif
 allowed_virtualenvs:

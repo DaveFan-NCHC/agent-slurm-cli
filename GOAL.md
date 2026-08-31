@@ -360,6 +360,12 @@ SLURM_REMOTE_WORKSPACE=/home/agent/workspace
 /home/agent/workspace/.slurm-agent/submissions/<uuid>/
 ```
 
+`SLURM_REMOTE_WORKSPACE` 必須是 login node 與所有可執行 job 的 compute nodes 以相同絕對路徑掛載的共享目錄。因為 compute node 需要讀取 staged payload、寫入 logs 與 artifacts，而 login node 之後需要查閱或下載這些檔案。
+
+Policy 內的 Apptainer image 與 virtualenv 固定路徑也必須在 login node 和 compute nodes 上以相同絕對路徑提供相同內容；可使用共享儲存，或由管理員確保每個節點都有一致副本。`SLURM_REMOTE_APPTAINER_PATH` 不必位於共享目錄，但每個相關節點都必須在相同路徑安裝可執行檔。
+
+`SLURM_LOCAL_JOB_WORKSPACE`、`SLURM_LOCAL_ARTIFACTS`、SSH key、known_hosts、policy 與 audit log 都是執行 CLI 那台機器的本機路徑，不需要分享給 Slurm nodes。
+
 必須阻止：
 
 ```text
