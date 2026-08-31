@@ -72,6 +72,9 @@ describe("CLI boundary", () => {
     ["history", "--days", "0"],
     ["history", "--state", "NOT_A_STATE"],
     ["usage", "1", "--user", "all"],
+    ["update", "1"],
+    ["signal", "1", "--signal", "TERM", "--scope", "children"],
+    ["submit", "--partition", "p", "--exclusive=false", "jobs/a.sh"],
   ])("rejects unexpected command options before loading credentials", async (...argv) => {
     const stdout = new Sink();
     const code = await main(argv, {}, stdout);
@@ -90,9 +93,13 @@ describe("CLI boundary", () => {
 allowed_partitions: [p]
 max_nodes: 2
 max_ntasks: 4
+max_ntasks_per_node: 4
 max_cpus_per_task: 2
 max_memory_gb: 8
 max_gpus: 2
+max_gpus_per_node: 2
+max_gpus_per_task: 1
+allow_exclusive: true
 max_time_minutes: 60
 max_wait_seconds: 60
 max_history_days: 30
@@ -103,12 +110,23 @@ max_dependency_jobs: 8
 allowed_dependency_types: [afterok, afterany, afternotok]
 allowed_gres:
   gpu1: gpu:1
+allowed_accounts:
+  research: proj123
+allowed_qos:
+  standard: normal
+allowed_constraints:
+  modern: '[zen3|zen4]'
+allowed_reservations:
+  workshop: ws2026
 require_apptainer_for_generated_scripts: false
 `);
       const remote = new SubmitExecutor();
       const stdout = new Sink();
       const code = await main(
-        ["submit", "-p", "p", "-N", "1", "-n", "1", "-c", "1", "--mem", "1G", "--gpus", "1", "--array", "0-3%2", "-t", "00:10:00", "jobs/train.sh", "--epochs", "2"],
+        ["submit", "-p", "p", "-N", "1", "-n", "1", "--ntasks-per-node", "1", "-c", "1",
+          "--mem-per-cpu", "1G", "--gpus-per-node", "1",
+          "-A", "research", "--qos", "standard", "-C", "modern", "--reservation", "workshop",
+          "--array", "0-3%2", "-t", "00:10:00", "jobs/train.sh", "--epochs", "2"],
         {
           SLURM_SSH_HOST: "host", SLURM_SSH_USER: "alice", SLURM_SSH_KEY_PATH: join(root, "key"),
           SLURM_SSH_KNOWN_HOSTS: join(root, "known_hosts"), SLURM_REMOTE_WORKSPACE: "/work",
@@ -123,8 +141,14 @@ require_apptainer_for_generated_scripts: false
         ok: true, job_id: "12345", array: { spec: "0-3%2", task_count: 4, concurrency: 2 },
       });
       expect(remote.commands.at(-1)?.args.slice(-2)).toEqual(["--epochs", "2"]);
-      expect(remote.commands.at(-1)?.args).toContain("--gpus=1");
+      expect(remote.commands.at(-1)?.args).toContain("--ntasks-per-node=1");
+      expect(remote.commands.at(-1)?.args).toContain("--mem-per-cpu=1G");
+      expect(remote.commands.at(-1)?.args).toContain("--gpus-per-node=1");
       expect(remote.commands.at(-1)?.args).toContain("--array=0-3%2");
+      expect(remote.commands.at(-1)?.args).toContain("--account=proj123");
+      expect(remote.commands.at(-1)?.args).toContain("--qos=normal");
+      expect(remote.commands.at(-1)?.args).toContain("--constraint=[zen3|zen4]");
+      expect(remote.commands.at(-1)?.args).toContain("--reservation=ws2026");
       expect(remote.commands.at(-1)?.args).toContain("--output=/work/.slurm-agent/logs/%A_%a.out");
       expect(remote.uploads).toHaveLength(2);
 
@@ -167,9 +191,12 @@ require_apptainer_for_generated_scripts: false
 allowed_partitions: [p]
 max_nodes: 2
 max_ntasks: 4
+max_ntasks_per_node: 4
 max_cpus_per_task: 2
 max_memory_gb: 8
 max_gpus: 2
+max_gpus_per_node: 2
+max_gpus_per_task: 1
 max_time_minutes: 60
 max_wait_seconds: 60
 max_history_days: 30
@@ -178,6 +205,8 @@ max_array_tasks: 100
 max_array_concurrency: 10
 max_dependency_jobs: 8
 allowed_dependency_types: [afterok, afterany, afternotok]
+max_artifact_files: 100
+allowed_signals: [TERM, USR1]
 require_apptainer_for_generated_scripts: false
 `);
       const env = {
@@ -235,6 +264,79 @@ require_apptainer_for_generated_scripts: false
       )).toBe(0);
       expect(JSON.parse(waitOutput.value)).toMatchObject({
         ok: true, terminal: true, timed_out: false, job: { job_id: "44", state: "COMPLETED" },
+      });
+
+      for (const [command, resultField] of [
+        ["hold", "held"], ["release", "released"], ["requeue", "requeued"],
+      ] as const) {
+        const controlRemote = new QueryExecutor([
+          { stdout: "44|alice|job|p|PENDING|0:00\n", stderr: "", exitCode: 0 },
+          { stdout: "", stderr: "", exitCode: 0 },
+        ]);
+        const controlOutput = new Sink();
+        expect(await main([command, "44"], env, controlOutput, new Sink() as never, () => controlRemote)).toBe(0);
+        expect(JSON.parse(controlOutput.value)).toMatchObject({ ok: true, job_id: "44", [resultField]: true });
+        expect(controlRemote.commands.at(-1)).toEqual({ executable: "scontrol", args: [command, "44"] });
+      }
+
+      const updateRemote = new QueryExecutor([
+        { stdout: "44|alice|job|p|PENDING|0:00\n", stderr: "", exitCode: 0 },
+        { stdout: "", stderr: "", exitCode: 0 },
+      ]);
+      const updateOutput = new Sink();
+      expect(await main(
+        ["update", "44", "--time", "00:30:00", "--array-concurrency", "4"],
+        env, updateOutput, new Sink() as never, () => updateRemote,
+      )).toBe(0);
+      expect(JSON.parse(updateOutput.value)).toMatchObject({
+        ok: true, job_id: "44", updated: { time: "00:30:00", array_concurrency: 4 },
+      });
+      expect(updateRemote.commands.at(-1)).toEqual({
+        executable: "scontrol", args: ["update", "JobId=44", "TimeLimit=00:30:00", "ArrayTaskThrottle=4"],
+      });
+
+      const signalRemote = new QueryExecutor([
+        { stdout: "44|alice|job|p|RUNNING|0:01\n", stderr: "", exitCode: 0 },
+        { stdout: "", stderr: "", exitCode: 0 },
+      ]);
+      const signalOutput = new Sink();
+      expect(await main(
+        ["signal", "44", "--signal", "SIGUSR1", "--scope", "batch"],
+        env, signalOutput, new Sink() as never, () => signalRemote,
+      )).toBe(0);
+      expect(JSON.parse(signalOutput.value)).toMatchObject({
+        ok: true, job_id: "44", signalled: true, signal: "USR1", scope: "batch",
+      });
+      expect(signalRemote.commands.at(-1)).toEqual({
+        executable: "scancel", args: ["--signal=USR1", "--batch", "44"],
+      });
+
+      const fairshareRemote = new QueryExecutor([{
+        stdout: "proj123|alice|100|0.5|200|0.25|0.75|1.5|cpu=20|cpu=3\n", stderr: "", exitCode: 0,
+      }]);
+      const fairshareOutput = new Sink();
+      expect(await main(
+        ["fairshare"], env, fairshareOutput, new Sink() as never, () => fairshareRemote,
+      )).toBe(0);
+      expect(JSON.parse(fairshareOutput.value)).toMatchObject({
+        ok: true, fairshare: [{ account: "proj123", user: "alice", fair_share: "0.75" }],
+      });
+
+      const artifactListing = ["model.bin", "42", "reports/metrics.json", "9", ""].join("\0");
+      const artifactsRemote = new QueryExecutor([
+        { stdout: "44|alice|job|p|COMPLETED|0:01\n", stderr: "", exitCode: 0 },
+        { stdout: "/work\n", stderr: "", exitCode: 0 },
+        { stdout: "/work/.slurm-agent/artifacts/44\n", stderr: "", exitCode: 0 },
+        { stdout: artifactListing, stderr: "", exitCode: 0 },
+      ]);
+      const artifactsOutput = new Sink();
+      expect(await main(
+        ["artifacts", "44"], env, artifactsOutput, new Sink() as never, () => artifactsRemote,
+      )).toBe(0);
+      expect(JSON.parse(artifactsOutput.value)).toMatchObject({
+        ok: true, job_id: "44", artifacts: [
+          { path: "model.bin", bytes: 42 }, { path: "reports/metrics.json", bytes: 9 },
+        ],
       });
     } finally {
       rmSync(root, { recursive: true, force: true });

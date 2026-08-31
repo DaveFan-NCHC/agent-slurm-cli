@@ -1,14 +1,54 @@
 import { AgentError, ExitCode } from "../errors/errors.js";
-import type { JobSummary, JobUsage, OwnedHistoryJob, OwnedJob, PartitionInfo, UsageStep } from "./types.js";
+import { resolveWorkspacePath } from "../policy/path.js";
+import type {
+  ArtifactEntry, FairShareEntry, JobSummary, JobUsage, OwnedHistoryJob, OwnedJob, PartitionInfo, UsageStep,
+} from "./types.js";
 
 function rows(output: string): string[][] {
   return output.split(/\r?\n/).filter((line) => line.trim()).map((line) => line.split("|"));
 }
 
+function optionalText(value: string): string | undefined {
+  return value && !["N/A", "(null)", "None", "Unknown"].includes(value) ? value : undefined;
+}
+
+function optionalCount(value: string, context: string): number | undefined {
+  if (!optionalText(value)) return undefined;
+  if (!/^\d+$/.test(value)) throw new AgentError("SLURM_QUERY_FAILED", `Unexpected ${context} output.`, ExitCode.SlurmFailure);
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) throw new AgentError("SLURM_QUERY_FAILED", `Unexpected ${context} output.`, ExitCode.SlurmFailure);
+  return parsed;
+}
+
+function queueDetails(fields: string[], offset: number): Partial<JobSummary> {
+  const details: Partial<JobSummary> = {};
+  const values: Array<[keyof JobSummary, string | number | undefined]> = [
+    ["reason", optionalText(fields[offset]!)],
+    ["priority", optionalCount(fields[offset + 1]!, "squeue priority")],
+    ["start_time", optionalText(fields[offset + 2]!)],
+    ["submit_time", optionalText(fields[offset + 3]!)],
+    ["time_limit", optionalText(fields[offset + 4]!)],
+    ["time_left", optionalText(fields[offset + 5]!)],
+    ["node_list", optionalText(fields[offset + 6]!)],
+    ["nodes", optionalCount(fields[offset + 7]!, "squeue node count")],
+    ["cpus", optionalCount(fields[offset + 8]!, "squeue CPU count")],
+    ["account", optionalText(fields[offset + 9]!)],
+    ["qos", optionalText(fields[offset + 10]!)],
+    ["reservation", optionalText(fields[offset + 11]!)],
+  ];
+  for (const [key, value] of values) if (value !== undefined) Object.assign(details, { [key]: value });
+  return details;
+}
+
 export function parseQueueList(output: string): JobSummary[] {
   return rows(output).map((fields) => {
-    if (fields.length !== 5) throw new AgentError("SLURM_QUERY_FAILED", "Unexpected squeue output.", ExitCode.SlurmFailure);
-    return { job_id: fields[0]!, name: fields[1]!, partition: fields[2]!, state: fields[3]!, elapsed: fields[4]! };
+    if (fields.length !== 5 && fields.length !== 17) {
+      throw new AgentError("SLURM_QUERY_FAILED", "Unexpected squeue output.", ExitCode.SlurmFailure);
+    }
+    return {
+      job_id: fields[0]!, name: fields[1]!, partition: fields[2]!, state: fields[3]!, elapsed: fields[4]!,
+      ...(fields.length === 17 ? queueDetails(fields, 5) : {}),
+    };
   });
 }
 
@@ -18,8 +58,13 @@ export function parseQueueJob(output: string): OwnedJob | undefined {
 
 export function parseQueueJobs(output: string): OwnedJob[] {
   return rows(output).map((fields) => {
-    if (fields.length !== 6) throw new AgentError("SLURM_QUERY_FAILED", "Unexpected squeue output.", ExitCode.SlurmFailure);
-    return { job_id: fields[0]!, user: fields[1]!, name: fields[2]!, partition: fields[3]!, state: fields[4]!, elapsed: fields[5]! };
+    if (fields.length !== 6 && fields.length !== 18) {
+      throw new AgentError("SLURM_QUERY_FAILED", "Unexpected squeue output.", ExitCode.SlurmFailure);
+    }
+    return {
+      job_id: fields[0]!, user: fields[1]!, name: fields[2]!, partition: fields[3]!, state: fields[4]!, elapsed: fields[5]!,
+      ...(fields.length === 18 ? queueDetails(fields, 6) : {}),
+    };
   });
 }
 
@@ -29,11 +74,30 @@ export function parseAccountingJob(output: string, requestedId: string): OwnedJo
 
 export function parseAccountingJobs(output: string): OwnedJob[] {
   return rows(output).map((fields) => {
-    if (fields.length !== 7) throw new AgentError("SLURM_QUERY_FAILED", "Unexpected sacct output.", ExitCode.SlurmFailure);
-    return {
+    if (fields.length !== 7 && fields.length !== 18) {
+      throw new AgentError("SLURM_QUERY_FAILED", "Unexpected sacct output.", ExitCode.SlurmFailure);
+    }
+    const job: OwnedJob = {
       job_id: fields[0]!, user: fields[1]!, name: fields[2]!, partition: fields[3]!,
       state: fields[4]!, elapsed: fields[5]!, exit_code: fields[6]!,
     };
+    if (fields.length === 18) {
+      const values: Array<[keyof JobSummary, string | number | undefined]> = [
+        ["reason", optionalText(fields[7]!)],
+        ["priority", optionalCount(fields[8]!, "sacct priority")],
+        ["start_time", optionalText(fields[9]!)],
+        ["submit_time", optionalText(fields[10]!)],
+        ["time_limit", optionalText(fields[11]!)],
+        ["node_list", optionalText(fields[12]!)],
+        ["nodes", optionalCount(fields[13]!, "sacct node count")],
+        ["cpus", optionalCount(fields[14]!, "sacct CPU count")],
+        ["account", optionalText(fields[15]!)],
+        ["qos", optionalText(fields[16]!)],
+        ["reservation", optionalText(fields[17]!)],
+      ];
+      for (const [key, value] of values) if (value !== undefined) Object.assign(job, { [key]: value });
+    }
+    return job;
   });
 }
 
@@ -228,4 +292,50 @@ export function parseLiveUsage(output: string): UsageStep[] {
       max_disk_read: fields[4]!, max_disk_write: fields[5]!, allocated_tres: fields[6]!,
     };
   });
+}
+
+export function parseFairShare(output: string): FairShareEntry[] {
+  return rows(output).map((fields) => {
+    if (fields.length !== 10) {
+      throw new AgentError("SLURM_QUERY_FAILED", "Unexpected sshare output.", ExitCode.SlurmFailure);
+    }
+    return {
+      account: fields[0]!, user: fields[1]!, raw_shares: fields[2]!, normalized_shares: fields[3]!,
+      raw_usage: fields[4]!, effective_usage: fields[5]!, fair_share: fields[6]!,
+      level_fair_share: fields[7]!, group_tres_minutes: fields[8]!, tres_run_minutes: fields[9]!,
+    };
+  });
+}
+
+export function parseArtifactList(output: string, maxFiles: number): ArtifactEntry[] {
+  const tokens = output.split("\0");
+  if (tokens.at(-1) === "") tokens.pop();
+  if (tokens.length % 2 !== 0) {
+    throw new AgentError("SLURM_QUERY_FAILED", "Unexpected artifact listing output.", ExitCode.SlurmFailure);
+  }
+  const entries: ArtifactEntry[] = [];
+  for (let index = 0; index < tokens.length; index += 2) {
+    const path = tokens[index]!;
+    const sizeText = tokens[index + 1]!;
+    let safePath: string;
+    try {
+      safePath = resolveWorkspacePath("/artifact", path).slice("/artifact/".length);
+    } catch {
+      continue;
+    }
+    if (!/^\d+$/.test(sizeText)) {
+      throw new AgentError("SLURM_QUERY_FAILED", "Unexpected artifact size output.", ExitCode.SlurmFailure);
+    }
+    const bytes = Number(sizeText);
+    if (!Number.isSafeInteger(bytes)) {
+      throw new AgentError("SLURM_QUERY_FAILED", "Unexpected artifact size output.", ExitCode.SlurmFailure);
+    }
+    entries.push({ path: safePath, bytes });
+    if (entries.length > maxFiles) {
+      throw new AgentError(
+        "ARTIFACT_LIST_TOO_LARGE", `Artifact listing exceeds policy maximum ${maxFiles} files.`, ExitCode.PolicyDenied,
+      );
+    }
+  }
+  return entries.sort((left, right) => left.path.localeCompare(right.path));
 }

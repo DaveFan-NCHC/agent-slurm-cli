@@ -9,10 +9,17 @@ slurm-agent submit
 slurm-agent cluster-info
 slurm-agent list
 slurm-agent history
+slurm-agent fairshare
 slurm-agent status JOB_ID
 slurm-agent usage JOB_ID
 slurm-agent cancel JOB_ID
+slurm-agent hold JOB_ID
+slurm-agent release JOB_ID
+slurm-agent requeue JOB_ID
+slurm-agent update JOB_ID
+slurm-agent signal JOB_ID --signal NAME
 slurm-agent logs JOB_ID
+slurm-agent artifacts JOB_ID
 slurm-agent artifact JOB_ID --path RELATIVE_PATH
 slurm-agent wait JOB_ID
 ```
@@ -34,7 +41,7 @@ slurm-agent --version
 For production, publish and install a pinned version during image/host bootstrap:
 
 ```bash
-npm install -g @nchc/slurm-agent@0.5.0
+npm install -g @nchc/slurm-agent@0.6.0
 command -v slurm-agent
 ```
 
@@ -62,7 +69,7 @@ export SLURM_AUDIT_LOG=/var/log/slurm-agent/audit.jsonl
 
 Copy [examples/slurm-agent-policy.example.yaml](examples/slurm-agent-policy.example.yaml) to the protected `SLURM_POLICY_PATH` location and adjust its partition, resource limits, and optional aliases. Unknown policy keys fail closed.
 
-Policy aliases map agent-visible logical names to operator-controlled runtime paths or GRES requests:
+Policy aliases map agent-visible logical names to operator-controlled runtime paths, GRES requests, or scheduler values:
 
 ```yaml
 allowed_apptainer_images:
@@ -70,8 +77,20 @@ allowed_apptainer_images:
 allowed_virtualenvs:
   project-a: /home/agent/venvs/project-a
 max_gpus: 4
+max_ntasks_per_node: 8
+max_gpus_per_node: 4
+max_gpus_per_task: 1
+allow_exclusive: false
 allowed_gres:
   a100x1: gpu:a100:1
+allowed_accounts:
+  research: project-a
+allowed_qos:
+  standard: normal
+allowed_constraints:
+  modern-cpu: '[zen3|zen4]'
+allowed_reservations:
+  workshop: workshop2026
 max_wait_seconds: 86400
 max_history_days: 30
 max_history_jobs: 200
@@ -79,15 +98,17 @@ max_array_tasks: 1000
 max_array_concurrency: 32
 max_dependency_jobs: 16
 allowed_dependency_types: [after, afterany, aftercorr, afternotok, afterok, singleton]
+max_artifact_files: 1000
+allowed_signals: [TERM, USR1, USR2]
 max_script_bytes: 65536
 max_script_args: 32
 max_script_arg_length: 1024
 require_apptainer_for_generated_scripts: true
 ```
 
-Arrays and dependencies are opt-in for upgrades: if their new policy keys are omitted, their limits and dependency allowlist default to disabled. Set the bounded values explicitly as above to enable them.
+Arrays, dependencies, MPI rank placement, per-node/per-task GPUs, exclusive nodes, and signals are opt-in for upgrades. Their limits, boolean, or allowlists default to disabled when omitted. Set bounded values explicitly to enable only the capabilities wanted by the operator.
 
-Aliases are accepted from the CLI; raw image, virtualenv, and GRES values are not. `max_gpus: 0` disables direct `--gpus` requests.
+Aliases are accepted from the CLI; raw image, virtualenv, GRES, account, QOS, constraint, and reservation values are not. `max_gpus: 0` disables direct `--gpus` requests. Omitting one of the scheduler alias mappings disables that submit option.
 
 ### Cluster path visibility
 
@@ -135,11 +156,31 @@ slurm-agent submit -p slurm-test --apptainer-image pytorch jobs/train.sh
 slurm-agent submit -p slurm-test --venv project-a jobs/train.sh
 ```
 
-GPU resources can be requested either by a policy-bounded count or by an operator-defined GRES alias. The two forms are mutually exclusive:
+MPI jobs can bound rank placement and memory per allocated CPU. `--mem` and `--mem-per-cpu` are mutually exclusive; the latter is checked against `max_memory_gb` using `ntasks × cpus-per-task`:
+
+```bash
+slurm-agent submit -p slurm-test -N 2 -n 8 --ntasks-per-node 4 \
+  -c 2 --mem-per-cpu 2G jobs/mpi.sh
+```
+
+GPU resources can be requested by a policy-bounded total, per-node count, per-task count, or operator-defined GRES alias. Choose exactly one form:
 
 ```bash
 slurm-agent submit -p slurm-test --gpus 1 --apptainer-image pytorch jobs/train.sh
+slurm-agent submit -p slurm-test -N 2 --gpus-per-node 2 jobs/train.sh
+slurm-agent submit -p slurm-test -n 4 --gpus-per-task 1 jobs/train.sh
 slurm-agent submit -p slurm-test --gres a100x1 --apptainer-image pytorch jobs/train.sh
+```
+
+Per-node and per-task requests are checked both against their own policy caps and the total `max_gpus`. `--exclusive` is accepted only when `allow_exclusive: true`; combine it with bounded per-node `--mem`, not `--mem-per-cpu`, because Slurm may allocate memory for every usable CPU on an exclusive node.
+
+Select operator-approved account, QOS, node constraints, or reservations with policy aliases:
+
+```bash
+slurm-agent submit -p slurm-test \
+  --account research --qos standard \
+  --constraint modern-cpu --reservation workshop \
+  --apptainer-image pytorch jobs/train.sh
 ```
 
 `--gres` never accepts a raw Slurm GRES expression. The CLI maps the alias through `allowed_gres` before constructing `sbatch`.
@@ -178,15 +219,33 @@ Other operations:
 slurm-agent cluster-info
 slurm-agent list
 slurm-agent history --days 7 --state COMPLETED --limit 50
+slurm-agent fairshare
 slurm-agent status 12345
 slurm-agent usage 12345
 slurm-agent wait 12345 --timeout 3600 --poll-interval 10
 slurm-agent logs 12345 --stream stdout --tail 200
 slurm-agent artifact 12345 --path results/model.bin
 slurm-agent cancel 12345
+slurm-agent hold 12345
+slurm-agent release 12345
+slurm-agent requeue 12345
+slurm-agent update 12345 --time 02:00:00 --array-concurrency 8
+slurm-agent update 12345 --dependency afterok:12344
+slurm-agent signal 12345 --signal USR1 --scope batch
+slurm-agent artifacts 12345
 ```
 
-`cluster-info` returns partition availability, time limit, node state, CPU counts, and configured GRES only for `allowed_partitions`. `wait` polls the owned job until it reaches a terminal state. If its bounded timeout expires, it returns `ok: true`, `terminal: false`, `timed_out: true`, and the last observed job state. `terminal: true` means the job has stopped, not necessarily that it succeeded; callers must inspect `job.state` and `job.exit_code`.
+`cluster-info` returns partition availability, time limit, node state, CPU counts, and configured GRES only for `allowed_partitions`. Active `list` and `status` results include available scheduling diagnostics such as pending reason, priority, actual or expected start time, submit time, time limit/remaining, allocated nodes, CPU/node counts, account, QOS, and reservation. For a pending job, `start_time` is Slurm's estimate and may be unavailable when the cluster does not use backfill scheduling. Completed `status` records return the corresponding retained accounting fields.
+
+`hold`, `release`, and `requeue` verify ownership before invoking the matching `scontrol` operation. A parent array ID applies to the whole owned array; an explicit task ID applies only to that task. `release` cannot remove an administrator hold. `requeue` restarts the batch script from the beginning with the same job ID.
+
+`update` exposes only time limit, dependency, and array concurrency changes. It applies the same policy bounds as submission, verifies the target job and every referenced dependency job are owned by the configured user, and does not expose generic `scontrol update` fields.
+
+`signal` verifies ownership and accepts only names in `allowed_signals`. Scope `steps` is the default, `batch` signals only the batch step, and `full` includes the batch script and child processes. Destructive uncatchable signals such as `KILL` and `STOP` cannot be placed in the policy allowlist.
+
+`fairshare` returns the configured user's `sshare` values, including account, shares, usage, fair-share factors, and TRES minutes. It requires Slurm accounting/fair-share data to be available and rejects unexpected rows for another user.
+
+`wait` polls the owned job until it reaches a terminal state. If its bounded timeout expires, it returns `ok: true`, `terminal: false`, `timed_out: true`, and the last observed job state. `terminal: true` means the job has stopped, not necessarily that it succeeded; callers must inspect `job.state` and `job.exit_code`.
 
 `history` uses one bounded accounting query and returns allocation records only for the configured SSH user. `--days` and `--limit` are capped by `max_history_days` and `max_history_jobs`; `--state` accepts a fixed set of Slurm job states.
 
@@ -207,10 +266,13 @@ cp model.bin "$artifact_dir/results/model.bin"
 The controlled download command is:
 
 ```bash
+slurm-agent artifacts 12345
 slurm-agent artifact 12345 --path results/model.bin
 ```
 
-It verifies job ownership and both remote and local path containment, enforces `max_artifact_bytes`, and refuses to overwrite an existing local file. The resulting file is stored at `SLURM_LOCAL_ARTIFACTS/12345/results/model.bin`; callers cannot provide an arbitrary local output path.
+`artifacts` first verifies ownership and containment, then lists only regular files below the job's artifact directory as `{path, bytes}` records. It does not follow symlinks, cross filesystems, or expose a generic filesystem browser; the count is bounded by `max_artifact_files` and a fixed output-size limit.
+
+`artifact` verifies job ownership and both remote and local path containment, enforces `max_artifact_bytes`, and refuses to overwrite an existing local file. The resulting file is stored at `SLURM_LOCAL_ARTIFACTS/12345/results/model.bin`; callers cannot provide an arbitrary local output path.
 
 ```json
 {"ok":true,"artifact":{"job_id":"12345","remote_path":"/home/slurm-agent/workspace/.slurm-agent/artifacts/12345/results/model.bin","local_path":"/var/lib/slurm-agent/artifacts/12345/results/model.bin","bytes":1048576}}
@@ -239,15 +301,15 @@ Errors retain a stable machine-readable code, for example:
 
 - Every remote command consists of a compile-time executable allowlist plus separately shell-quoted arguments; no shell fragments are accepted.
 - Job IDs, array specifications, dependencies, partition names, script segments, job names, resource units, and times use strict grammars. Unknown flags and duplicate flags are rejected.
-- Runtime selection accepts only policy-defined logical aliases. Apptainer images must resolve to regular files; virtual environments must contain an executable `bin/python`. Raw runtime paths, image URIs, bind mounts, and caller-provided commands are unavailable.
+- Runtime and scheduler selection accepts only policy-defined logical aliases. Apptainer images must resolve to regular files; virtual environments must contain an executable `bin/python`. Raw runtime paths, account/QOS/constraint/reservation values, image URIs, bind mounts, and caller-provided commands are unavailable.
 - Agent scripts come only from `SLURM_LOCAL_JOB_WORKSPACE`; symlinks, traversal, oversized files, invalid UTF-8, missing shebangs, and embedded `#SBATCH` directives are rejected. The exact bytes are hashed before upload.
 - Upload destinations are random, CLI-generated directories below `.slurm-agent/submissions`; callers cannot select a remote destination. Payload and trusted runner uploads use temporary files followed by atomic rename.
 - The batch environment exports only controlled `SLURM_AGENT_*` values, not the complete SSH process environment.
-- `cancel`, `status`, `usage`, `wait`, `logs`, and `artifact` confirm that Slurm reports the configured user as owner. Dependency references receive the same ownership check before submission. `history` fixes its query to that user and rejects unexpected cross-user rows.
+- `cancel`, `hold`, `release`, `requeue`, `update`, `signal`, `status`, `usage`, `wait`, `logs`, `artifacts`, and `artifact` confirm that Slurm reports the configured user as owner. Dependency references receive the same ownership check before submission or update. `history` and `fairshare` fix their queries to that user and reject unexpected cross-user rows.
 - Script and log paths are checked with remote `realpath`, preventing traversal and symlink escape.
 - Artifact transfer is an internal, single-file SFTP stream after remote containment checks; it is not an SFTP browser. The destination is derived from trusted configuration and the job ID, and is created without overwrite.
 - Audit records never contain private keys, credentials, command stderr, or environment values.
-- The remote host needs GNU-compatible `realpath`, `test`, `mkdir`, and `tail`, plus `sbatch`, `squeue`, `sacct`, `scancel`, `sinfo`, and `sstat` in its non-interactive PATH.
+- The remote host needs GNU-compatible `realpath`, `test`, `mkdir`, `tail`, and `find`, plus `sbatch`, `squeue`, `sacct`, `scancel`, `scontrol`, `sinfo`, `sshare`, and `sstat` in its non-interactive PATH.
 - Cluster-wide enforcement still belongs in Slurm configuration such as account/QOS limits and `job_submit` policy; the CLI policy is an additional capability boundary, not a replacement for scheduler controls.
 - Completed-job lookup depends on Slurm accounting (`sacct`) retention and permissions. If no allocation record is visible, the CLI reports `JOB_NOT_FOUND`.
 - Live resource metrics depend on Slurm's `jobacct_gather` support. If `sstat` is unavailable for a running job, `usage` returns accounting data with `live_available: false`.

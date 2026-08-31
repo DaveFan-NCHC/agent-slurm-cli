@@ -5,6 +5,18 @@ export interface JobSummary {
   state: string;
   elapsed: string;
   exit_code?: string;
+  reason?: string;
+  priority?: number;
+  start_time?: string;
+  submit_time?: string;
+  time_limit?: string;
+  time_left?: string;
+  node_list?: string;
+  nodes?: number;
+  cpus?: number;
+  account?: string;
+  qos?: string;
+  reservation?: string;
 }
 
 export interface OwnedJob extends JobSummary {
@@ -23,6 +35,24 @@ export interface ArtifactResult {
   remote_path: string;
   local_path: string;
   bytes: number;
+}
+
+export interface ArtifactEntry {
+  path: string;
+  bytes: number;
+}
+
+export interface FairShareEntry {
+  account: string;
+  user: string;
+  raw_shares: string;
+  normalized_shares: string;
+  raw_usage: string;
+  effective_usage: string;
+  fair_share: string;
+  level_fair_share: string;
+  group_tres_minutes: string;
+  tres_run_minutes: string;
 }
 
 export interface PartitionInfo {

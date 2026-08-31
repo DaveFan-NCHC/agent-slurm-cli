@@ -4,21 +4,25 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveLocalArtifactPath, resolveWorkspacePath } from "../../src/policy/path.js";
 import {
-  validateArray, validateDependency, validateHistoryState, validateJobId, validateSubmit,
+  validateArray, validateDependency, validateHistoryState, validateJobId, validateSignal,
+  validateSubmit, validateUpdate,
 } from "../../src/policy/validator.js";
 import type { Policy } from "../../src/policy/types.js";
 
 const policy: Policy = {
-  allowedPartitions: ["slurm-test"], maxNodes: 2, maxNtasks: 16, maxCpusPerTask: 8,
-  maxMemoryGb: 64, maxGpus: 4, maxTimeMinutes: 240, maxWaitSeconds: 3600,
+  allowedPartitions: ["slurm-test"], maxNodes: 2, maxNtasks: 16, maxNtasksPerNode: 8, maxCpusPerTask: 8,
+  maxMemoryGb: 64, maxGpus: 4, maxGpusPerNode: 4, maxGpusPerTask: 2, allowExclusive: true,
+  maxTimeMinutes: 240, maxWaitSeconds: 3600,
   maxHistoryDays: 30, maxHistoryJobs: 200,
   maxArrayTasks: 1000, maxArrayConcurrency: 32, maxDependencyJobs: 16,
   allowedDependencyTypes: ["after", "afterany", "aftercorr", "afternotok", "afterok", "singleton"],
   maxLogLines: 1000, maxLogBytes: 1048576,
-  maxArtifactBytes: 104857600,
+  maxArtifactBytes: 104857600, maxArtifactFiles: 1000, allowedSignals: ["TERM", "USR1"],
   allowedApptainerImages: { pytorch: "/opt/apptainer/pytorch.sif" },
   allowedVirtualenvs: { "project-a": "/opt/venvs/project-a" },
   allowedGres: { a100x1: "gpu:a100:1" },
+  allowedAccounts: { research: "proj123" }, allowedQos: { normal: "normal" },
+  allowedConstraints: { modern: "[zen3|zen4]" }, allowedReservations: { workshop: "ws2026" },
   maxScriptBytes: 65536, maxScriptArgs: 32, maxScriptArgLength: 1024,
   requireApptainerForGeneratedScripts: false,
 };
@@ -81,6 +85,34 @@ describe("resource policy", () => {
     expect(validateSubmit({ ...valid, gpus: 2 }, policy).gpus).toBe(2);
     expect(validateSubmit({ ...valid, gres: "a100x1" }, policy).gresValue).toBe("gpu:a100:1");
   });
+  it("accepts bounded MPI topology, per-CPU memory, and exclusive nodes", () => {
+    expect(validateSubmit({
+      ...valid, nodes: 2, ntasks: 4, ntasksPerNode: 2, cpusPerTask: 2,
+      memory: undefined, memoryPerCpu: "2G",
+    }, policy)).toMatchObject({ ntasksPerNode: 2, memoryGb: 16 });
+    expect(validateSubmit({ ...valid, exclusive: true }, policy).exclusive).toBe(true);
+  });
+  it("accepts bounded per-node and per-task GPU requests", () => {
+    expect(validateSubmit({ ...valid, nodes: 2, gpusPerNode: 2 }, policy).gpusPerNode).toBe(2);
+    expect(validateSubmit({ ...valid, ntasks: 4, gpusPerTask: 1 }, policy).gpusPerTask).toBe(1);
+  });
+  it("resolves controlled account, QOS, constraint, and reservation aliases", () => {
+    expect(validateSubmit({
+      ...valid, account: "research", qos: "normal", constraint: "modern", reservation: "workshop",
+    }, policy)).toMatchObject({
+      accountValue: "proj123", qosValue: "normal", constraintValue: "[zen3|zen4]", reservationValue: "ws2026",
+    });
+  });
+  it.each([
+    ["account", "ACCOUNT_ALIAS_NOT_ALLOWED"],
+    ["qos", "QOS_ALIAS_NOT_ALLOWED"],
+    ["constraint", "CONSTRAINT_ALIAS_NOT_ALLOWED"],
+    ["reservation", "RESERVATION_ALIAS_NOT_ALLOWED"],
+  ] as const)("rejects an unknown %s alias", (field, code) => {
+    expect(() => validateSubmit({ ...valid, [field]: "unknown" }, policy)).toThrowError(
+      expect.objectContaining({ code }),
+    );
+  });
   it("rejects excess GPUs, unknown GRES aliases, and simultaneous GPU selectors", () => {
     expect(() => validateSubmit({ ...valid, gpus: 5 }, policy)).toThrowError(
       expect.objectContaining({ code: "RESOURCE_LIMIT_EXCEEDED" }),
@@ -89,6 +121,28 @@ describe("resource policy", () => {
       expect.objectContaining({ code: "GRES_ALIAS_NOT_ALLOWED" }),
     );
     expect(() => validateSubmit({ ...valid, gpus: 1, gres: "a100x1" }, policy)).toThrow();
+    expect(() => validateSubmit({ ...valid, gpusPerNode: 1, gpusPerTask: 1 }, policy)).toThrow();
+  });
+  it("enforces MPI, GPU, memory, and exclusive-node policy boundaries", () => {
+    expect(() => validateSubmit({ ...valid, nodes: 2, ntasks: 5, ntasksPerNode: 2 }, policy)).toThrow();
+    expect(() => validateSubmit({ ...valid, ntasksPerNode: 9 }, policy)).toThrowError(
+      expect.objectContaining({ code: "RESOURCE_LIMIT_EXCEEDED" }),
+    );
+    expect(() => validateSubmit({ ...valid, nodes: 2, gpusPerNode: 3 }, policy)).toThrowError(
+      expect.objectContaining({ code: "RESOURCE_LIMIT_EXCEEDED" }),
+    );
+    expect(() => validateSubmit({ ...valid, ntasks: 4, gpusPerTask: 2 }, policy)).toThrowError(
+      expect.objectContaining({ code: "RESOURCE_LIMIT_EXCEEDED" }),
+    );
+    expect(() => validateSubmit({ ...valid, memoryPerCpu: "1G" }, policy)).toThrow();
+    expect(() => validateSubmit({
+      ...valid, memory: undefined, memoryPerCpu: "1G", exclusive: true,
+    }, policy)).toThrow();
+    expect(() => validateSubmit({
+      ...valid, ntasks: 16, cpusPerTask: 8, memory: undefined, memoryPerCpu: "1G",
+    }, policy)).toThrowError(expect.objectContaining({ code: "RESOURCE_LIMIT_EXCEEDED" }));
+    expect(() => validateSubmit({ ...valid, exclusive: true }, { ...policy, allowExclusive: false }))
+      .toThrowError(expect.objectContaining({ code: "RESOURCE_LIMIT_EXCEEDED" }));
   });
   it("can require an approved Apptainer runtime", () => {
     expect(() => validateSubmit(valid, { ...policy, requireApptainerForGeneratedScripts: true }))
@@ -162,6 +216,35 @@ describe("job arrays and dependencies", () => {
     expect(() => validateSubmit({ ...valid, jobName: undefined, dependency: "singleton" }, policy)).toThrow();
     expect(validateSubmit({ ...valid, array: "0-3%2", dependency: "aftercorr:123" }, policy))
       .toMatchObject({ dependency: "aftercorr:123" });
+  });
+});
+
+describe("safe job updates and signals", () => {
+  it("normalizes bounded update values and extracts dependency ownership checks", () => {
+    expect(validateUpdate({
+      time: "02:00:00", dependency: "afterok:123:456", arrayConcurrency: 8,
+    }, policy)).toMatchObject({
+      timeMinutes: 120, dependencyJobIds: ["123", "456"], arrayConcurrency: 8,
+    });
+  });
+  it("rejects empty, unsafe, and over-policy updates", () => {
+    expect(() => validateUpdate({}, policy)).toThrow();
+    expect(() => validateUpdate({ arrayConcurrency: 0 }, policy)).toThrow();
+    expect(() => validateUpdate({ arrayConcurrency: 33 }, policy)).toThrowError(
+      expect.objectContaining({ code: "RESOURCE_LIMIT_EXCEEDED" }),
+    );
+    expect(() => validateUpdate({ time: "04:00:01" }, policy)).toThrowError(
+      expect.objectContaining({ code: "TIME_LIMIT_EXCEEDED" }),
+    );
+    expect(() => validateUpdate({ dependency: "aftercorr:123" }, policy)).toThrow();
+  });
+  it("normalizes SIG prefixes and enforces the signal allowlist and scope", () => {
+    expect(validateSignal("sigusr1", "full", policy)).toEqual({ signal: "USR1", scope: "full" });
+    expect(validateSignal("TERM", "steps", policy)).toEqual({ signal: "TERM", scope: "steps" });
+    expect(() => validateSignal("KILL", "steps", policy)).toThrowError(
+      expect.objectContaining({ code: "SIGNAL_NOT_ALLOWED" }),
+    );
+    expect(() => validateSignal("TERM", "children", policy)).toThrow();
   });
 });
 

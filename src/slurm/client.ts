@@ -2,17 +2,28 @@ import { randomUUID } from "node:crypto";
 import { AgentError, ExitCode } from "../errors/errors.js";
 import { isContained, resolveLocalArtifactPath, resolveWorkspacePath } from "../policy/path.js";
 import type { PreparedScript } from "../policy/script.js";
-import type { NormalizedSubmit } from "../policy/validator.js";
+import type { NormalizedSubmit, NormalizedUpdate, SignalScope } from "../policy/validator.js";
 import type { Policy } from "../policy/types.js";
 import type { RemoteExecutor, RemoteResult, SafeCommand } from "../transport/types.js";
 import {
-  parseAccountingJobs, parseClusterInfo, parseHistory, parseJobUsage, parseLiveUsage,
+  parseAccountingJobs, parseArtifactList, parseClusterInfo, parseFairShare, parseHistory, parseJobUsage, parseLiveUsage,
   parseQueueJobs, parseQueueList, parseSubmittedJobId,
 } from "./parser.js";
-import type { ArtifactResult, HistoryJob, JobSummary, JobUsage, LogResult, OwnedJob, PartitionInfo, WaitResult } from "./types.js";
+import type {
+  ArtifactEntry, ArtifactResult, FairShareEntry, HistoryJob, JobSummary, JobUsage, LogResult, OwnedJob,
+  PartitionInfo, WaitResult,
+} from "./types.js";
 import { TRUSTED_RUNNER } from "./runner.js";
 
-function failure(result: RemoteResult, code: "SLURM_SUBMIT_FAILED" | "SLURM_QUERY_FAILED" | "SLURM_CANCEL_FAILED" | "SLURM_LOG_FAILED", message: string): never {
+const QUEUE_LIST_FORMAT = "%i|%j|%P|%T|%M|%r|%Q|%S|%V|%l|%L|%N|%D|%C|%a|%q|%v";
+const QUEUE_JOB_FORMAT = "%i|%u|%j|%P|%T|%M|%r|%Q|%S|%V|%l|%L|%N|%D|%C|%a|%q|%v";
+const ACCOUNTING_JOB_FORMAT = "JobIDRaw,User,JobName,Partition,State,Elapsed,ExitCode,Reason,Priority,Start,Submit,Timelimit,NodeList,AllocNodes,AllocCPUS,Account,QOS,Reservation";
+
+function failure(
+  result: RemoteResult,
+  code: "SLURM_SUBMIT_FAILED" | "SLURM_QUERY_FAILED" | "SLURM_CANCEL_FAILED" | "SLURM_CONTROL_FAILED" | "SLURM_LOG_FAILED",
+  message: string,
+): never {
   throw new AgentError(code, message, ExitCode.SlurmFailure, { remote_exit_code: result.exitCode });
 }
 
@@ -70,7 +81,9 @@ export class SlurmClient {
   }
 
   async list(): Promise<JobSummary[]> {
-    const result = await this.run({ executable: "squeue", args: ["--noheader", "--array", "--user", this.user, "--format=%i|%j|%P|%T|%M"] });
+    const result = await this.run({
+      executable: "squeue", args: ["--noheader", "--array", "--user", this.user, `--format=${QUEUE_LIST_FORMAT}`],
+    });
     if (result.exitCode !== 0) failure(result, "SLURM_QUERY_FAILED", "Unable to list Slurm jobs.");
     return parseQueueList(result.stdout);
   }
@@ -112,7 +125,9 @@ export class SlurmClient {
   }
 
   async getOwnedJob(jobId: string): Promise<OwnedJob> {
-    const active = await this.run({ executable: "squeue", args: ["--noheader", "--array", "--jobs", jobId, "--format=%i|%u|%j|%P|%T|%M"] });
+    const active = await this.run({
+      executable: "squeue", args: ["--noheader", "--array", "--jobs", jobId, `--format=${QUEUE_JOB_FORMAT}`],
+    });
     if (active.exitCode === 0) {
       const activeJobs = parseQueueJobs(active.stdout);
       const job = activeJobs.find((candidate) => candidate.job_id === jobId);
@@ -127,7 +142,7 @@ export class SlurmClient {
     }
     const accounting = await this.run({
       executable: "sacct",
-      args: ["--noheader", "--parsable2", "--allocations", "--jobs", jobId, "--format=JobIDRaw,User,JobName,Partition,State,Elapsed,ExitCode"],
+      args: ["--noheader", "--parsable2", "--allocations", "--jobs", jobId, `--format=${ACCOUNTING_JOB_FORMAT}`],
     });
     if (accounting.exitCode !== 0) failure(accounting, "SLURM_QUERY_FAILED", "Unable to query Slurm accounting.");
     const accountingJobs = parseAccountingJobs(accounting.stdout);
@@ -283,13 +298,23 @@ export class SlurmClient {
     const logIdPattern = options.array ? "%A_%a" : "%j";
     const args = [
       "--parsable", `--chdir=${workspaceReal}`, `--partition=${options.partition}`, `--nodes=${options.nodes}`,
-      `--ntasks=${options.ntasks}`, `--cpus-per-task=${options.cpusPerTask}`, `--mem=${options.memory}`,
+      `--ntasks=${options.ntasks}`, `--cpus-per-task=${options.cpusPerTask}`,
       `--time=${options.time}`, `--output=${logDirectoryReal}/${logIdPattern}.out`, `--error=${logDirectoryReal}/${logIdPattern}.err`,
       `--export=${exportedEnvironment.join(",")}`,
     ];
     if (options.jobName) args.push(`--job-name=${options.jobName}`);
+    if (options.ntasksPerNode !== undefined) args.push(`--ntasks-per-node=${options.ntasksPerNode}`);
+    if (options.memory !== undefined) args.push(`--mem=${options.memory}`);
+    if (options.memoryPerCpu !== undefined) args.push(`--mem-per-cpu=${options.memoryPerCpu}`);
     if (options.gpus !== undefined) args.push(`--gpus=${options.gpus}`);
+    if (options.gpusPerNode !== undefined) args.push(`--gpus-per-node=${options.gpusPerNode}`);
+    if (options.gpusPerTask !== undefined) args.push(`--gpus-per-task=${options.gpusPerTask}`);
     if (options.gresValue !== undefined) args.push(`--gres=${options.gresValue}`);
+    if (options.accountValue !== undefined) args.push(`--account=${options.accountValue}`);
+    if (options.qosValue !== undefined) args.push(`--qos=${options.qosValue}`);
+    if (options.constraintValue !== undefined) args.push(`--constraint=${options.constraintValue}`);
+    if (options.reservationValue !== undefined) args.push(`--reservation=${options.reservationValue}`);
+    if (options.exclusive) args.push("--exclusive");
     if (options.array !== undefined) args.push(`--array=${options.array}`);
     if (options.dependency !== undefined) args.push(`--dependency=${options.dependency}`);
     args.push("--", runnerPath, ...options.scriptArgs);
@@ -302,6 +327,67 @@ export class SlurmClient {
     await this.assertOwnedJobReference(jobId);
     const result = await this.run({ executable: "scancel", args: [jobId] });
     if (result.exitCode !== 0) failure(result, "SLURM_CANCEL_FAILED", `Unable to cancel job ${jobId}.`);
+  }
+
+  async hold(jobId: string): Promise<void> {
+    await this.assertOwnedJobReference(jobId);
+    const result = await this.run({ executable: "scontrol", args: ["hold", jobId] });
+    if (result.exitCode !== 0) failure(result, "SLURM_CONTROL_FAILED", `Unable to hold job ${jobId}.`);
+  }
+
+  async release(jobId: string): Promise<void> {
+    await this.assertOwnedJobReference(jobId);
+    const result = await this.run({ executable: "scontrol", args: ["release", jobId] });
+    if (result.exitCode !== 0) failure(result, "SLURM_CONTROL_FAILED", `Unable to release job ${jobId}.`);
+  }
+
+  async requeue(jobId: string): Promise<void> {
+    await this.assertOwnedJobReference(jobId);
+    const result = await this.run({ executable: "scontrol", args: ["requeue", jobId] });
+    if (result.exitCode !== 0) failure(result, "SLURM_CONTROL_FAILED", `Unable to requeue job ${jobId}.`);
+  }
+
+  async update(jobId: string, options: NormalizedUpdate): Promise<void> {
+    await this.assertOwnedJobReference(jobId);
+    for (const dependencyJobId of options.dependencyJobIds ?? []) {
+      await this.assertOwnedJobReference(dependencyJobId);
+    }
+    const args = ["update", `JobId=${jobId}`];
+    if (options.time !== undefined) args.push(`TimeLimit=${options.time}`);
+    if (options.dependency !== undefined) args.push(`Dependency=${options.dependency}`);
+    if (options.arrayConcurrency !== undefined) args.push(`ArrayTaskThrottle=${options.arrayConcurrency}`);
+    const result = await this.run({ executable: "scontrol", args });
+    if (result.exitCode !== 0) failure(result, "SLURM_CONTROL_FAILED", `Unable to update job ${jobId}.`);
+  }
+
+  async signal(jobId: string, signal: string, scope: SignalScope): Promise<void> {
+    await this.assertOwnedJobReference(jobId);
+    const args = [`--signal=${signal}`];
+    if (scope === "batch") args.push("--batch");
+    if (scope === "full") args.push("--full");
+    args.push(jobId);
+    const result = await this.run({ executable: "scancel", args });
+    if (result.exitCode !== 0) failure(result, "SLURM_CONTROL_FAILED", `Unable to signal job ${jobId}.`);
+  }
+
+  async fairshare(): Promise<FairShareEntry[]> {
+    const result = await this.run({
+      executable: "sshare",
+      args: [
+        "--noheader", "--parsable2", "--long", "--Users", `--users=${this.user}`,
+        "--format=Account,User,RawShares,NormShares,RawUsage,EffectvUsage,FairShare,LevelFS,GrpTRESMins,TRESRunMins",
+      ],
+      maxOutputBytes: 1048576,
+    });
+    if (result.exitCode !== 0) failure(result, "SLURM_QUERY_FAILED", "Unable to query Slurm fair-share information.");
+    if (result.stdoutTruncated) {
+      throw new AgentError("SLURM_QUERY_FAILED", "Slurm fair-share output exceeded the safe limit.", ExitCode.SlurmFailure);
+    }
+    const entries = parseFairShare(result.stdout);
+    if (entries.some((entry) => entry.user !== this.user)) {
+      throw new AgentError("SLURM_QUERY_FAILED", "Slurm returned fair-share information for another user.", ExitCode.SlurmFailure);
+    }
+    return entries;
   }
 
   async wait(jobId: string, timeoutSeconds: number, pollIntervalSeconds: number): Promise<WaitResult> {
@@ -358,6 +444,29 @@ export class SlurmClient {
     const localPath = resolveLocalArtifactPath(this.localArtifactsPath, jobId, safeRelative);
     const downloaded = await this.executor.downloadArtifact({ remotePath, localPath, maxBytes: this.policy.maxArtifactBytes });
     return { job_id: jobId, remote_path: remotePath, local_path: localPath, bytes: downloaded.bytes };
+  }
+
+  async artifacts(jobId: string): Promise<ArtifactEntry[]> {
+    await this.getOwnedJob(jobId);
+    const workspaceReal = await this.workspaceRealpath();
+    const artifactDirectory = `${workspaceReal}/.slurm-agent/artifacts/${jobId}`;
+    const artifactDirectoryReal = await this.realpath(artifactDirectory);
+    if (!artifactDirectoryReal) {
+      throw new AgentError("ARTIFACT_NOT_FOUND", `No artifact directory exists for job ${jobId}.`, ExitCode.NotFound);
+    }
+    if (!isContained(workspaceReal, artifactDirectoryReal)) {
+      throw new AgentError("PATH_NOT_ALLOWED", "Artifact directory resolves outside the remote workspace.", ExitCode.PolicyDenied);
+    }
+    const result = await this.run({
+      executable: "find",
+      args: ["--", artifactDirectoryReal, "-xdev", "-type", "f", "-printf", "%P\\0%s\\0"],
+      maxOutputBytes: 1048576,
+    });
+    if (result.exitCode !== 0) failure(result, "SLURM_QUERY_FAILED", `Unable to list artifacts for job ${jobId}.`);
+    if (result.stdoutTruncated) {
+      throw new AgentError("ARTIFACT_LIST_TOO_LARGE", "Artifact listing exceeded the safe output limit.", ExitCode.PolicyDenied);
+    }
+    return parseArtifactList(result.stdout, this.policy.maxArtifactFiles);
   }
 }
 

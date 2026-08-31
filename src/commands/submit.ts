@@ -5,8 +5,12 @@ import type { CommandContext } from "./types.js";
 export async function runSubmit(context: CommandContext, options: NormalizedSubmit, script: PreparedScript): Promise<Record<string, unknown>> {
   const resources = {
     partition: options.partition, nodes: options.nodes, ntasks: options.ntasks,
-    cpus_per_task: options.cpusPerTask, memory: options.memory, time: options.time,
-    gpus: options.gpus, gres: options.gres,
+    ntasks_per_node: options.ntasksPerNode, cpus_per_task: options.cpusPerTask,
+    memory: options.memory, memory_per_cpu: options.memoryPerCpu, time: options.time,
+    gpus: options.gpus, gpus_per_node: options.gpusPerNode, gpus_per_task: options.gpusPerTask,
+    gres: options.gres, exclusive: options.exclusive,
+    account: options.account, qos: options.qos,
+    constraint: options.constraint, reservation: options.reservation,
     array: options.array, array_tasks: options.arrayTaskCount, array_concurrency: options.arrayConcurrency,
     dependency: options.dependency, dependency_jobs: options.dependencyJobIds,
     apptainer_image: options.apptainerImage, venv: options.venv,

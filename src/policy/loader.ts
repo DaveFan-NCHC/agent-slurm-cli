@@ -5,11 +5,14 @@ import { AgentError, ExitCode } from "../errors/errors.js";
 import type { Policy } from "./types.js";
 
 const keys = [
-  "allowed_partitions", "max_nodes", "max_ntasks", "max_cpus_per_task",
-  "max_memory_gb", "max_gpus", "max_time_minutes", "max_wait_seconds", "max_log_lines", "max_log_bytes",
+  "allowed_partitions", "max_nodes", "max_ntasks", "max_ntasks_per_node", "max_cpus_per_task",
+  "max_memory_gb", "max_gpus", "max_gpus_per_node", "max_gpus_per_task", "allow_exclusive",
+  "max_time_minutes", "max_wait_seconds", "max_log_lines", "max_log_bytes",
   "max_history_days", "max_history_jobs",
   "max_array_tasks", "max_array_concurrency", "max_dependency_jobs", "allowed_dependency_types",
-  "max_artifact_bytes", "allowed_apptainer_images", "allowed_virtualenvs", "allowed_gres",
+  "max_artifact_bytes", "max_artifact_files", "allowed_signals",
+  "allowed_apptainer_images", "allowed_virtualenvs", "allowed_gres",
+  "allowed_accounts", "allowed_qos", "allowed_constraints", "allowed_reservations",
   "max_script_bytes", "max_script_args", "max_script_arg_length",
   "require_apptainer_for_generated_scripts",
 ] as const;
@@ -19,6 +22,7 @@ const fixedPathPattern = /^\/[A-Za-z0-9_./+-]+$/;
 const supportedDependencyTypes = new Set([
   "after", "afterany", "aftercorr", "afternotok", "afterok", "singleton",
 ]);
+const supportedSignals = new Set(["HUP", "INT", "QUIT", "TERM", "USR1", "USR2", "CONT"]);
 
 function positive(value: unknown, key: string, defaultValue?: number): number {
   const resolved = value ?? defaultValue;
@@ -73,6 +77,42 @@ function gresMap(value: unknown, key: string): Record<string, string> {
   return result;
 }
 
+function identifierMap(value: unknown, key: string): Record<string, string> {
+  if (value === undefined) return {};
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new AgentError("CONFIGURATION_ERROR", `${key} must be a mapping of aliases to Slurm names.`, ExitCode.General);
+  }
+  const result: Record<string, string> = {};
+  for (const [alias, name] of Object.entries(value as Record<string, unknown>)) {
+    if (!aliasPattern.test(alias)) {
+      throw new AgentError("CONFIGURATION_ERROR", `${key} contains an invalid alias.`, ExitCode.General);
+    }
+    if (typeof name !== "string" || !aliasPattern.test(name)) {
+      throw new AgentError("CONFIGURATION_ERROR", `${key}.${alias} must be a safe Slurm name.`, ExitCode.General);
+    }
+    result[alias] = name;
+  }
+  return result;
+}
+
+function constraintMap(value: unknown, key: string): Record<string, string> {
+  if (value === undefined) return {};
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new AgentError("CONFIGURATION_ERROR", `${key} must be a mapping of aliases to Slurm constraints.`, ExitCode.General);
+  }
+  const result: Record<string, string> = {};
+  for (const [alias, constraint] of Object.entries(value as Record<string, unknown>)) {
+    if (!aliasPattern.test(alias)) {
+      throw new AgentError("CONFIGURATION_ERROR", `${key} contains an invalid alias.`, ExitCode.General);
+    }
+    if (typeof constraint !== "string" || constraint.length > 256 || !/^[A-Za-z0-9_.&|*()[\]-]+$/.test(constraint)) {
+      throw new AgentError("CONFIGURATION_ERROR", `${key}.${alias} must be a safe Slurm constraint expression.`, ExitCode.General);
+    }
+    result[alias] = constraint;
+  }
+  return result;
+}
+
 function booleanValue(value: unknown, key: string, defaultValue: boolean): boolean {
   const resolved = value ?? defaultValue;
   if (typeof resolved !== "boolean") {
@@ -93,6 +133,23 @@ function dependencyTypes(value: unknown): string[] {
     );
   }
   return resolved as string[];
+}
+
+function signalNames(value: unknown): string[] {
+  const resolved = value ?? [];
+  if (!Array.isArray(resolved)) {
+    throw new AgentError("CONFIGURATION_ERROR", "allowed_signals must be a list of signal names.", ExitCode.General);
+  }
+  const normalized = resolved.map((entry) => typeof entry === "string" ? entry.toUpperCase() : entry);
+  if (normalized.some((entry) => typeof entry !== "string" || !supportedSignals.has(entry)) ||
+      new Set(normalized).size !== normalized.length) {
+    throw new AgentError(
+      "CONFIGURATION_ERROR",
+      "allowed_signals must contain unique supported signal names.",
+      ExitCode.General,
+    );
+  }
+  return normalized as string[];
 }
 
 export function loadPolicy(path: string): Policy {
@@ -118,9 +175,13 @@ export function loadPolicy(path: string): Policy {
     allowedPartitions: data.allowed_partitions as string[],
     maxNodes: positive(data.max_nodes, "max_nodes"),
     maxNtasks: positive(data.max_ntasks, "max_ntasks"),
+    maxNtasksPerNode: nonNegative(data.max_ntasks_per_node, "max_ntasks_per_node", 0),
     maxCpusPerTask: positive(data.max_cpus_per_task, "max_cpus_per_task"),
     maxMemoryGb: positive(data.max_memory_gb, "max_memory_gb"),
     maxGpus: nonNegative(data.max_gpus, "max_gpus", 0),
+    maxGpusPerNode: nonNegative(data.max_gpus_per_node, "max_gpus_per_node", 0),
+    maxGpusPerTask: nonNegative(data.max_gpus_per_task, "max_gpus_per_task", 0),
+    allowExclusive: booleanValue(data.allow_exclusive, "allow_exclusive", false),
     maxTimeMinutes: positive(data.max_time_minutes, "max_time_minutes"),
     maxWaitSeconds: positive(data.max_wait_seconds, "max_wait_seconds", 86400),
     maxHistoryDays: positive(data.max_history_days, "max_history_days", 30),
@@ -132,9 +193,15 @@ export function loadPolicy(path: string): Policy {
     maxLogLines: positive(data.max_log_lines, "max_log_lines", 1000),
     maxLogBytes: positive(data.max_log_bytes, "max_log_bytes", 1048576),
     maxArtifactBytes: positive(data.max_artifact_bytes, "max_artifact_bytes", 104857600),
+    maxArtifactFiles: positive(data.max_artifact_files, "max_artifact_files", 1000),
+    allowedSignals: signalNames(data.allowed_signals),
     allowedApptainerImages: fixedPathMap(data.allowed_apptainer_images, "allowed_apptainer_images"),
     allowedVirtualenvs: fixedPathMap(data.allowed_virtualenvs, "allowed_virtualenvs"),
     allowedGres: gresMap(data.allowed_gres, "allowed_gres"),
+    allowedAccounts: identifierMap(data.allowed_accounts, "allowed_accounts"),
+    allowedQos: identifierMap(data.allowed_qos, "allowed_qos"),
+    allowedConstraints: constraintMap(data.allowed_constraints, "allowed_constraints"),
+    allowedReservations: identifierMap(data.allowed_reservations, "allowed_reservations"),
     maxScriptBytes: positive(data.max_script_bytes, "max_script_bytes", 65536),
     maxScriptArgs: positive(data.max_script_args, "max_script_args", 32),
     maxScriptArgLength: positive(data.max_script_arg_length, "max_script_arg_length", 1024),

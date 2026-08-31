@@ -3,9 +3,13 @@ allowed_partitions:
   - slurm-test
 max_nodes: 2
 max_ntasks: 16
+max_ntasks_per_node: 8
 max_cpus_per_task: 8
 max_memory_gb: 64
 max_gpus: 4
+max_gpus_per_node: 4
+max_gpus_per_task: 1
+allow_exclusive: false
 max_time_minutes: 240
 max_wait_seconds: 86400
 max_history_days: 30
@@ -24,6 +28,12 @@ allowed_dependency_types:
 max_log_lines: 1000
 max_log_bytes: 1048576
 max_artifact_bytes: 104857600
+max_artifact_files: 1000
+# Signals are opt-in. KILL and STOP are intentionally unavailable.
+allowed_signals:
+  - TERM
+  - USR1
+  - USR2
 # Runtime paths are remote paths. They must expose the same content at the same
 # absolute path on the login node and every compute node that may run the job.
 # Shared storage is recommended; identical per-node installations also work.
@@ -34,6 +44,14 @@ allowed_virtualenvs:
 allowed_gres:
   a100x1: gpu:a100:1
   a100x2: gpu:a100:2
+allowed_accounts:
+  research: project-a
+allowed_qos:
+  standard: normal
+allowed_constraints:
+  modern-cpu: '[zen3|zen4]'
+allowed_reservations:
+  workshop: workshop2026
 max_script_bytes: 65536
 max_script_args: 32
 max_script_arg_length: 1024

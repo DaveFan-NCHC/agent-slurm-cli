@@ -6,14 +6,17 @@ import { prepareLocalScript } from "../../src/policy/script.js";
 import type { Policy } from "../../src/policy/types.js";
 
 const policy: Policy = {
-  allowedPartitions: ["p"], maxNodes: 1, maxNtasks: 1, maxCpusPerTask: 1,
-  maxMemoryGb: 1, maxGpus: 0, maxTimeMinutes: 10, maxWaitSeconds: 60,
+  allowedPartitions: ["p"], maxNodes: 1, maxNtasks: 1, maxNtasksPerNode: 1, maxCpusPerTask: 1,
+  maxMemoryGb: 1, maxGpus: 0, maxGpusPerNode: 0, maxGpusPerTask: 0, allowExclusive: false,
+  maxTimeMinutes: 10, maxWaitSeconds: 60,
   maxHistoryDays: 7, maxHistoryJobs: 20,
   maxArrayTasks: 100, maxArrayConcurrency: 10, maxDependencyJobs: 8,
   allowedDependencyTypes: ["afterok", "afterany"],
   maxLogLines: 10, maxLogBytes: 1024,
-  maxArtifactBytes: 1024, allowedApptainerImages: {}, allowedVirtualenvs: {},
+  maxArtifactBytes: 1024, maxArtifactFiles: 10, allowedSignals: [],
+  allowedApptainerImages: {}, allowedVirtualenvs: {},
   allowedGres: {},
+  allowedAccounts: {}, allowedQos: {}, allowedConstraints: {}, allowedReservations: {},
   maxScriptBytes: 128, maxScriptArgs: 4, maxScriptArgLength: 32,
   requireApptainerForGeneratedScripts: false,
 };

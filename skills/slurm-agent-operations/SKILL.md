@@ -1,6 +1,6 @@
 ---
 name: slurm-agent-operations
-description: "Operate jobs through the constrained slurm-agent CLI, including GPU-aware arrays and dependencies, cluster information, history, resource usage, waiting, listing, status, logs, cancellation, and controlled artifact downloads. Use for Slurm job lifecycle requests handled by this project; do not use it for cluster administration or generic SSH access."
+description: "Operate jobs through the constrained slurm-agent CLI, including MPI/GPU resource placement, arrays and dependencies, controlled scheduler aliases, fair-share inspection, safe job updates and signals, lifecycle controls, logs, and controlled artifact listing/downloads. Use for Slurm job lifecycle requests handled by this project; do not use it for cluster administration or generic SSH access."
 ---
 
 # Slurm Agent Operations
@@ -9,7 +9,7 @@ Use the installed `slurm-agent` executable as the only interface to the remote S
 
 ## Boundaries
 
-- Invoke only `submit`, `cluster-info`, `list`, `history`, `status`, `usage`, `wait`, `logs`, `cancel`, or `artifact`.
+- Invoke only `submit`, `cluster-info`, `list`, `history`, `fairshare`, `status`, `usage`, `wait`, `logs`, `cancel`, `hold`, `release`, `requeue`, `update`, `signal`, `artifacts`, or `artifact`.
 - Never invoke or propose `ssh`, `exec`, `shell`, `run`, `scp`, `sftp`, arbitrary remote commands, or arbitrary remote/local paths.
 - Treat stdout as the machine-readable JSON response. Audit records may appear on stderr and must not be mixed into JSON parsing.
 - Do not expose SSH keys, credentials, or trusted `SLURM_*` environment values.
@@ -89,14 +89,32 @@ slurm-agent submit ... --dependency afterok:12345:12346,afternotok:12347
 
 Do not invent or broaden dependency references. OR conditions, offsets, cross-user jobs, disallowed types, and reference counts above policy are unavailable. Use `aftercorr` only for a new array submission, and use `singleton` only with an explicit `--job-name`.
 
+Use only policy-defined aliases for scheduler-specific account, QOS, node constraint, and reservation selection:
+
+```bash
+slurm-agent submit ... --account research --qos standard --constraint modern-cpu --reservation workshop
+```
+
+Never pass raw scheduler values; the CLI resolves aliases through `allowed_accounts`, `allowed_qos`, `allowed_constraints`, and `allowed_reservations`.
+
 Request GPUs with at most one of these policy-controlled forms:
 
 ```bash
 slurm-agent submit ... --gpus 1
+slurm-agent submit ... --gpus-per-node 2
+slurm-agent submit ... --gpus-per-task 1
 slurm-agent submit ... --gres a100x1
 ```
 
-`--gpus` is bounded by `max_gpus`. `--gres` is an agent-visible alias resolved through `allowed_gres`; never pass a raw GRES expression. The two options are mutually exclusive.
+The GPU forms are mutually exclusive. Per-node and per-task requests are bounded by their corresponding policy limits and by total `max_gpus`. `--gres` is an agent-visible alias resolved through `allowed_gres`; never pass a raw GRES expression.
+
+For MPI placement, use `--ntasks-per-node` only when requested and keep `ntasks <= nodes × ntasks-per-node`. Choose only one memory form:
+
+```bash
+slurm-agent submit ... -N 2 -n 8 --ntasks-per-node 4 -c 2 --mem-per-cpu 2G
+```
+
+`--mem-per-cpu` is checked using the requested usable CPU count and cannot be combined with `--mem`. Use `--exclusive` only when the user needs exclusive nodes and policy permits it; combine exclusive allocation with bounded per-node `--mem`, since Slurm may allocate memory for every usable CPU on the node.
 
 Optionally select one policy-defined runtime alias:
 
@@ -109,18 +127,39 @@ The options are mutually exclusive. Never pass a raw path, image URI, bind mount
 
 Do not automatically retry an ambiguous failed submission, because the first submission might have reached Slurm. Inspect `list` once and ask for direction if the outcome cannot be established.
 
-### Cluster information, list, history, status, usage, and wait
+### Cluster information, list, history, fair-share, status, usage, and wait
 
 ```bash
 slurm-agent cluster-info
 slurm-agent list
 slurm-agent history --days 7 --state COMPLETED --limit 50
+slurm-agent fairshare
 slurm-agent status 12345
 slurm-agent usage 12345
 slurm-agent wait 12345 --timeout 3600 --poll-interval 10
 ```
 
-`cluster-info` returns only policy-allowed partitions. `list` returns only active jobs belonging to the configured SSH user. `history` returns bounded accounting records for that fixed user; keep `--days` and `--limit` within policy and use only supported states. `status` checks active jobs through `squeue` and completed jobs through `sacct`. `usage` verifies ownership and returns accounting efficiency plus live `sstat` steps when available. Missing efficiency fields mean Slurm did not report enough inputs; do not invent values. `wait` applies the same ownership check on every poll and is bounded by the policy maximum timeout. A wait timeout is a successful observation with `terminal: false` and `timed_out: true`. When `terminal` is true, inspect `job.state` and `job.exit_code`; terminal does not imply success. Never substitute another user, a partition, or a wildcard for an explicit job ID.
+`cluster-info` returns only policy-allowed partitions. `list` returns only active jobs belonging to the configured SSH user. `history` returns bounded accounting records for that fixed user; keep `--days` and `--limit` within policy and use only supported states. `fairshare` returns `sshare` values only for that user; unavailable data may indicate cluster accounting/fair-share configuration rather than an empty queue. `status` checks active jobs through `squeue` and completed jobs through `sacct`. Active results may include pending reason, priority, actual or expected start time, submit time, time limit/remaining, nodes, account, QOS, and reservation. Treat a pending `start_time` as an estimate and report that it is unavailable when omitted. `usage` verifies ownership and returns accounting efficiency plus live `sstat` steps when available. Missing efficiency fields mean Slurm did not report enough inputs; do not invent values. `wait` applies the same ownership check on every poll and is bounded by the policy maximum timeout. A wait timeout is a successful observation with `terminal: false` and `timed_out: true`. When `terminal` is true, inspect `job.state` and `job.exit_code`; terminal does not imply success. Never substitute another user, a partition, or a wildcard for an explicit job ID.
+
+### Hold, release, and requeue
+
+```bash
+slurm-agent hold 12345
+slurm-agent release 12345
+slurm-agent requeue 12345
+```
+
+These operations change external state. Run them only when the user requests the operation for that explicit job or array task ID. A parent array ID affects the whole array. `release` only removes a user hold, and `requeue` restarts the batch script from the beginning with the same job ID. Do not retry an ambiguous control failure automatically.
+
+### Update and signal
+
+```bash
+slurm-agent update 12345 --time 02:00:00
+slurm-agent update 12345 --dependency afterok:12344 --array-concurrency 8
+slurm-agent signal 12345 --signal USR1 --scope batch
+```
+
+Both commands change external state. Run them only for the explicit owned job or array task requested by the user. `update` exposes only time, dependency, and array-concurrency fields; do not propose generic `scontrol` fields. All dependency references must be owned and policy-approved. `signal` accepts only policy-allowed names and the scopes `steps`, `batch`, or `full`; default to `steps` unless the user needs the batch script or its full process tree. Do not retry an ambiguous result automatically.
 
 ### Logs
 
@@ -152,8 +191,11 @@ cp model.bin "$artifact_dir/results/model.bin"
 Download one artifact with a safe path relative to that job directory:
 
 ```bash
+slurm-agent artifacts 12345
 slurm-agent artifact 12345 --path results/model.bin
 ```
+
+Use `artifacts` to discover downloadable regular files for that explicit owned job. It returns only safe relative paths and byte sizes, bounded by policy; it does not list symlinks or arbitrary remote directories. Use a returned path with `artifact` when the user requests the download.
 
 On success, read `artifact.local_path` from stdout JSON. The destination is derived as:
 
@@ -163,7 +205,7 @@ SLURM_LOCAL_ARTIFACTS/<job-id>/<relative-artifact-path>
 
 Do not add an output-path or overwrite flag. The CLI verifies job ownership, remote and local containment, regular-file type, transfer timeout, and `max_artifact_bytes`. It refuses to overwrite an existing local file. If the destination exists, do not delete it automatically; report the path and ask the user whether they want to move or remove it.
 
-This is a controlled single-file transfer, not an artifact browser. To retrieve multiple known files, download each explicit relative path separately. Do not infer filenames by probing arbitrary directories.
+This is a controlled per-job listing plus single-file transfer, not a general filesystem browser. To retrieve multiple files, download each explicit safe relative path separately.
 
 ## JSON and failures
 
@@ -180,4 +222,4 @@ Success has `ok: true`; failure has `ok: false` and an `error.code` plus `error.
 7 ownership denied
 ```
 
-For `JOB_NOT_OWNED_BY_USER`, `PATH_NOT_ALLOWED`, `PARTITION_NOT_ALLOWED`, `RUNTIME_ALIAS_NOT_ALLOWED`, `GRES_ALIAS_NOT_ALLOWED`, `RESOURCE_LIMIT_EXCEEDED`, `TIME_LIMIT_EXCEEDED`, or `ARTIFACT_TOO_LARGE`, stop rather than attempting a workaround. For `ARTIFACT_ALREADY_EXISTS`, preserve the existing file. For transient query failures, a bounded retry is reasonable; do not blindly retry `submit` or `cancel`.
+For `JOB_NOT_OWNED_BY_USER`, `PATH_NOT_ALLOWED`, `PARTITION_NOT_ALLOWED`, `RUNTIME_ALIAS_NOT_ALLOWED`, `GRES_ALIAS_NOT_ALLOWED`, `RESOURCE_LIMIT_EXCEEDED`, `TIME_LIMIT_EXCEEDED`, `SIGNAL_NOT_ALLOWED`, `ARTIFACT_TOO_LARGE`, or `ARTIFACT_LIST_TOO_LARGE`, stop rather than attempting a workaround. For `ARTIFACT_ALREADY_EXISTS`, preserve the existing file. For transient query failures, a bounded retry is reasonable; do not blindly retry state-changing commands.

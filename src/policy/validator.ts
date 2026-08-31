@@ -6,10 +6,19 @@ export interface SubmitOptions {
   partition: string;
   nodes: number;
   ntasks: number;
+  ntasksPerNode?: number;
   cpusPerTask: number;
-  memory: string;
+  memory?: string;
+  memoryPerCpu?: string;
   gpus?: number;
+  gpusPerNode?: number;
+  gpusPerTask?: number;
   gres?: string;
+  exclusive?: boolean;
+  account?: string;
+  qos?: string;
+  constraint?: string;
+  reservation?: string;
   array?: string;
   dependency?: string;
   time: string;
@@ -25,10 +34,27 @@ export interface NormalizedSubmit extends SubmitOptions {
   apptainerImagePath?: string;
   venvPath?: string;
   gresValue?: string;
+  accountValue?: string;
+  qosValue?: string;
+  constraintValue?: string;
+  reservationValue?: string;
   arrayTaskCount?: number;
   arrayConcurrency?: number;
   dependencyJobIds?: string[];
 }
+
+export interface UpdateOptions {
+  time?: string;
+  dependency?: string;
+  arrayConcurrency?: number;
+}
+
+export interface NormalizedUpdate extends UpdateOptions {
+  timeMinutes?: number;
+  dependencyJobIds?: string[];
+}
+
+export type SignalScope = "steps" | "batch" | "full";
 
 const runtimeAliasPattern = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
 const historyStates = new Set([
@@ -50,6 +76,19 @@ function resolveGresAlias(alias: string | undefined, allowed: Record<string, str
   if (!runtimeAliasPattern.test(alias)) throw invalid("GRES must be a safe logical alias.");
   const value = allowed[alias];
   if (!value) throw policyDenied("GRES_ALIAS_NOT_ALLOWED", `GRES alias ${alias} is not permitted.`);
+  return value;
+}
+
+function resolvePolicyAlias(
+  alias: string | undefined,
+  allowed: Record<string, string>,
+  label: string,
+  code: "ACCOUNT_ALIAS_NOT_ALLOWED" | "QOS_ALIAS_NOT_ALLOWED" | "CONSTRAINT_ALIAS_NOT_ALLOWED" | "RESERVATION_ALIAS_NOT_ALLOWED",
+): string | undefined {
+  if (alias === undefined) return undefined;
+  if (!runtimeAliasPattern.test(alias)) throw invalid(`${label} must be a safe logical alias.`);
+  const value = allowed[alias];
+  if (!value) throw policyDenied(code, `${label} alias ${alias} is not permitted.`);
   return value;
 }
 
@@ -162,12 +201,12 @@ export function validateDependency(value: string | undefined, policy: Policy): {
   return { value, jobIds: [...new Set(jobIds)], types: [...new Set(types)] };
 }
 
-export function parseMemoryGb(text: string): number {
+export function parseMemoryGb(text: string, option = "--mem"): number {
   const match = /^(\d+)([KMGTP])$/i.exec(text);
-  if (!match) throw invalid("--mem must use an integer followed by K, M, G, T, or P.");
+  if (!match) throw invalid(`${option} must use an integer followed by K, M, G, T, or P.`);
   const amount = Number(match[1]);
   const unit = match[2]!.toUpperCase();
-  if (!Number.isSafeInteger(amount) || amount <= 0) throw invalid("--mem must be positive.");
+  if (!Number.isSafeInteger(amount) || amount <= 0) throw invalid(`${option} must be positive.`);
   const multipliers: Record<string, number> = { K: 1 / 1024 / 1024, M: 1 / 1024, G: 1, T: 1024, P: 1024 * 1024 };
   return amount * multipliers[unit]!;
 }
@@ -198,6 +237,12 @@ export function validateJobName(name: string | undefined): void {
   }
 }
 
+function checkedProduct(values: number[], label: string): number {
+  const value = values.reduce((product, current) => product * current, 1);
+  if (!Number.isSafeInteger(value)) throw invalid(`${label} is too large.`);
+  return value;
+}
+
 export function validateSubmit(options: SubmitOptions, policy: Policy): NormalizedSubmit {
   if (!/^[A-Za-z0-9_.-]+$/.test(options.partition)) throw invalid("Invalid partition name.");
   if (!policy.allowedPartitions.includes(options.partition)) {
@@ -207,16 +252,20 @@ export function validateSubmit(options: SubmitOptions, policy: Policy): Normaliz
   if (options.apptainerImage && options.venv) {
     throw invalid("--apptainer-image and --venv are mutually exclusive.");
   }
-  if (options.gpus !== undefined && options.gres !== undefined) {
-    throw invalid("--gpus and --gres are mutually exclusive.");
-  }
-  if (options.gpus !== undefined) {
-    if (!Number.isInteger(options.gpus) || options.gpus < 1) throw invalid("--gpus must be a positive integer.");
-    if (options.gpus > policy.maxGpus) {
-      throw policyDenied("RESOURCE_LIMIT_EXCEEDED", `gpus exceeds policy maximum ${policy.maxGpus}.`);
-    }
+  const gpuSelectors = [options.gpus, options.gpusPerNode, options.gpusPerTask, options.gres]
+    .filter((value) => value !== undefined);
+  if (gpuSelectors.length > 1) {
+    throw invalid("--gpus, --gpus-per-node, --gpus-per-task, and --gres are mutually exclusive.");
   }
   const gresValue = resolveGresAlias(options.gres, policy.allowedGres);
+  const accountValue = resolvePolicyAlias(options.account, policy.allowedAccounts, "Account", "ACCOUNT_ALIAS_NOT_ALLOWED");
+  const qosValue = resolvePolicyAlias(options.qos, policy.allowedQos, "QOS", "QOS_ALIAS_NOT_ALLOWED");
+  const constraintValue = resolvePolicyAlias(
+    options.constraint, policy.allowedConstraints, "Constraint", "CONSTRAINT_ALIAS_NOT_ALLOWED",
+  );
+  const reservationValue = resolvePolicyAlias(
+    options.reservation, policy.allowedReservations, "Reservation", "RESERVATION_ALIAS_NOT_ALLOWED",
+  );
   const array = validateArray(options.array, policy);
   const dependency = validateDependency(options.dependency, policy);
   if (dependency.types?.includes("aftercorr") && !options.array) {
@@ -249,7 +298,69 @@ export function validateSubmit(options: SubmitOptions, policy: Policy): Normaliz
     if (!Number.isInteger(actual) || actual < 1) throw invalid(`${label} must be a positive integer.`);
     if (actual > max) throw policyDenied("RESOURCE_LIMIT_EXCEEDED", `${label} exceeds policy maximum ${max}.`);
   }
-  const memoryGb = parseMemoryGb(options.memory);
+  if (options.ntasksPerNode !== undefined) {
+    if (!Number.isInteger(options.ntasksPerNode) || options.ntasksPerNode < 1) {
+      throw invalid("ntasks-per-node must be a positive integer.");
+    }
+    if (options.ntasksPerNode > policy.maxNtasksPerNode) {
+      throw policyDenied(
+        "RESOURCE_LIMIT_EXCEEDED", `ntasks-per-node exceeds policy maximum ${policy.maxNtasksPerNode}.`,
+      );
+    }
+    if (options.ntasks > checkedProduct([options.nodes, options.ntasksPerNode], "tasks per node allocation")) {
+      throw invalid("--ntasks exceeds --nodes multiplied by --ntasks-per-node.");
+    }
+  }
+  if (options.exclusive && !policy.allowExclusive) {
+    throw policyDenied("RESOURCE_LIMIT_EXCEEDED", "exclusive node allocation is not permitted by policy.");
+  }
+  if (options.gpus !== undefined) {
+    if (!Number.isInteger(options.gpus) || options.gpus < 1) throw invalid("--gpus must be a positive integer.");
+    if (options.gpus > policy.maxGpus) {
+      throw policyDenied("RESOURCE_LIMIT_EXCEEDED", `gpus exceeds policy maximum ${policy.maxGpus}.`);
+    }
+  }
+  if (options.gpusPerNode !== undefined) {
+    if (!Number.isInteger(options.gpusPerNode) || options.gpusPerNode < 1) {
+      throw invalid("--gpus-per-node must be a positive integer.");
+    }
+    if (options.gpusPerNode > policy.maxGpusPerNode) {
+      throw policyDenied(
+        "RESOURCE_LIMIT_EXCEEDED", `gpus-per-node exceeds policy maximum ${policy.maxGpusPerNode}.`,
+      );
+    }
+    const total = checkedProduct([options.gpusPerNode, options.nodes], "total GPU request");
+    if (total > policy.maxGpus) {
+      throw policyDenied("RESOURCE_LIMIT_EXCEEDED", `total GPUs exceed policy maximum ${policy.maxGpus}.`);
+    }
+  }
+  if (options.gpusPerTask !== undefined) {
+    if (!Number.isInteger(options.gpusPerTask) || options.gpusPerTask < 1) {
+      throw invalid("--gpus-per-task must be a positive integer.");
+    }
+    if (options.gpusPerTask > policy.maxGpusPerTask) {
+      throw policyDenied(
+        "RESOURCE_LIMIT_EXCEEDED", `gpus-per-task exceeds policy maximum ${policy.maxGpusPerTask}.`,
+      );
+    }
+    const total = checkedProduct([options.gpusPerTask, options.ntasks], "total GPU request");
+    if (total > policy.maxGpus) {
+      throw policyDenied("RESOURCE_LIMIT_EXCEEDED", `total GPUs exceed policy maximum ${policy.maxGpus}.`);
+    }
+  }
+  if (options.memory !== undefined && options.memoryPerCpu !== undefined) {
+    throw invalid("--mem and --mem-per-cpu are mutually exclusive.");
+  }
+  if (options.exclusive && options.memoryPerCpu !== undefined) {
+    throw invalid("--exclusive cannot be combined with --mem-per-cpu; use a bounded per-node --mem request.");
+  }
+  const memoryPerUnitGb = parseMemoryGb(
+    options.memory ?? options.memoryPerCpu ?? "1G",
+    options.memoryPerCpu === undefined ? "--mem" : "--mem-per-cpu",
+  );
+  const memoryGb = options.memoryPerCpu === undefined
+    ? memoryPerUnitGb
+    : memoryPerUnitGb * checkedProduct([options.ntasks, options.cpusPerTask], "total CPU request");
   if (memoryGb > policy.maxMemoryGb) {
     throw policyDenied("RESOURCE_LIMIT_EXCEEDED", `memory exceeds policy maximum ${policy.maxMemoryGb}G.`);
   }
@@ -259,9 +370,47 @@ export function validateSubmit(options: SubmitOptions, policy: Policy): Normaliz
   }
   return {
     ...options, memoryGb, timeMinutes, apptainerImagePath, venvPath, gresValue,
+    accountValue, qosValue, constraintValue, reservationValue,
     arrayTaskCount: array.taskCount, arrayConcurrency: array.concurrency,
     dependencyJobIds: dependency.jobIds,
   };
+}
+
+export function validateUpdate(options: UpdateOptions, policy: Policy): NormalizedUpdate {
+  if (options.time === undefined && options.dependency === undefined && options.arrayConcurrency === undefined) {
+    throw invalid("update requires at least one of --time, --dependency, or --array-concurrency.");
+  }
+  const timeMinutes = options.time === undefined ? undefined : parseTimeMinutes(options.time);
+  if (timeMinutes !== undefined && timeMinutes > policy.maxTimeMinutes) {
+    throw policyDenied("TIME_LIMIT_EXCEEDED", `time exceeds policy maximum ${policy.maxTimeMinutes} minutes.`);
+  }
+  const dependency = validateDependency(options.dependency, policy);
+  if (dependency.types?.includes("aftercorr")) {
+    throw invalid("aftercorr is not supported by update because the target array shape cannot be safely inferred.");
+  }
+  if (options.arrayConcurrency !== undefined) {
+    if (!Number.isInteger(options.arrayConcurrency) || options.arrayConcurrency < 1) {
+      throw invalid("array concurrency must be a positive integer.");
+    }
+    if (options.arrayConcurrency > policy.maxArrayConcurrency) {
+      throw policyDenied(
+        "RESOURCE_LIMIT_EXCEEDED", `array concurrency exceeds policy maximum ${policy.maxArrayConcurrency}.`,
+      );
+    }
+  }
+  return { ...options, timeMinutes, dependencyJobIds: dependency.jobIds };
+}
+
+export function validateSignal(value: string, scope: string, policy: Policy): { signal: string; scope: SignalScope } {
+  const signal = value.toUpperCase().replace(/^SIG/, "");
+  if (!/^[A-Z][A-Z0-9]*$/.test(signal)) throw invalid("--signal must be a safe signal name.");
+  if (!policy.allowedSignals.includes(signal)) {
+    throw policyDenied("SIGNAL_NOT_ALLOWED", `Signal ${signal} is not permitted.`);
+  }
+  if (scope !== "steps" && scope !== "batch" && scope !== "full") {
+    throw invalid("--scope must be steps, batch, or full.");
+  }
+  return { signal, scope };
 }
 
 export function validateJobId(value: string): string {

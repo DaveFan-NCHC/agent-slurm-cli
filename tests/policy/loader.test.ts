@@ -33,6 +33,12 @@ allowed_virtualenvs:
       expect(policy.allowedApptainerImages.pytorch).toBe("/opt/apptainer/pytorch.sif");
       expect(policy.allowedVirtualenvs["project-a"]).toBe("/opt/venvs/project-a");
       expect(policy.maxGpus).toBe(0);
+      expect(policy.maxNtasksPerNode).toBe(0);
+      expect(policy.maxGpusPerNode).toBe(0);
+      expect(policy.maxGpusPerTask).toBe(0);
+      expect(policy.allowExclusive).toBe(false);
+      expect(policy.maxArtifactFiles).toBe(1000);
+      expect(policy.allowedSignals).toEqual([]);
       expect(policy.maxWaitSeconds).toBe(86400);
       expect(policy.maxHistoryDays).toBe(30);
       expect(policy.maxHistoryJobs).toBe(200);
@@ -40,12 +46,51 @@ allowed_virtualenvs:
       expect(policy.maxArrayConcurrency).toBe(0);
       expect(policy.maxDependencyJobs).toBe(0);
       expect(policy.allowedDependencyTypes).toEqual([]);
+      expect(policy.allowedAccounts).toEqual({});
+      expect(policy.allowedQos).toEqual({});
+      expect(policy.allowedConstraints).toEqual({});
+      expect(policy.allowedReservations).toEqual({});
     } finally { fixture.cleanup(); }
   });
 
-  it("loads GPU, wait, and GRES policy", () => {
+  it("loads controlled Slurm submission aliases", () => {
     const fixture = policyFile(`${base}
+allowed_accounts:
+  research: proj123
+allowed_qos:
+  standard: normal
+allowed_constraints:
+  modern: '[zen3|zen4]'
+allowed_reservations:
+  workshop: ws2026
+`);
+    try {
+      const policy = loadPolicy(fixture.path);
+      expect(policy.allowedAccounts.research).toBe("proj123");
+      expect(policy.allowedQos.standard).toBe("normal");
+      expect(policy.allowedConstraints.modern).toBe("[zen3|zen4]");
+      expect(policy.allowedReservations.workshop).toBe("ws2026");
+    } finally { fixture.cleanup(); }
+  });
+
+  it.each([
+    ["allowed_accounts", "bad;id"],
+    ["allowed_qos", "normal,high"],
+    ["allowed_reservations", "ws$(id)"],
+    ["allowed_constraints", "gpu;id"],
+  ])("rejects unsafe controlled alias values in %s", (key, value) => {
+    const fixture = policyFile(`${base}\n${key}:\n  unsafe: '${value}'\n`);
+    try { expect(() => loadPolicy(fixture.path)).toThrow(); }
+    finally { fixture.cleanup(); }
+  });
+
+  it("loads MPI, GPU, signal, wait, and GRES policy", () => {
+    const fixture = policyFile(`${base}
+max_ntasks_per_node: 8
 max_gpus: 4
+max_gpus_per_node: 2
+max_gpus_per_task: 1
+allow_exclusive: true
 max_wait_seconds: 7200
 max_history_days: 14
 max_history_jobs: 75
@@ -53,12 +98,18 @@ max_array_tasks: 500
 max_array_concurrency: 20
 max_dependency_jobs: 4
 allowed_dependency_types: [afterok, afterany]
+max_artifact_files: 250
+allowed_signals: [term, USR1]
 allowed_gres:
   a100x2: gpu:a100:2
 `);
     try {
       const policy = loadPolicy(fixture.path);
       expect(policy.maxGpus).toBe(4);
+      expect(policy.maxNtasksPerNode).toBe(8);
+      expect(policy.maxGpusPerNode).toBe(2);
+      expect(policy.maxGpusPerTask).toBe(1);
+      expect(policy.allowExclusive).toBe(true);
       expect(policy.maxWaitSeconds).toBe(7200);
       expect(policy.maxHistoryDays).toBe(14);
       expect(policy.maxHistoryJobs).toBe(75);
@@ -66,6 +117,8 @@ allowed_gres:
       expect(policy.maxArrayConcurrency).toBe(20);
       expect(policy.maxDependencyJobs).toBe(4);
       expect(policy.allowedDependencyTypes).toEqual(["afterok", "afterany"]);
+      expect(policy.maxArtifactFiles).toBe(250);
+      expect(policy.allowedSignals).toEqual(["TERM", "USR1"]);
       expect(policy.allowedGres.a100x2).toBe("gpu:a100:2");
     } finally { fixture.cleanup(); }
   });
@@ -100,6 +153,15 @@ allowed_gres:
     "rejects invalid dependency type policy %j",
     (types) => {
       const fixture = policyFile(`${base}\nallowed_dependency_types: ${types}\n`);
+      try { expect(() => loadPolicy(fixture.path)).toThrow(); }
+      finally { fixture.cleanup(); }
+    },
+  );
+
+  it.each(["[KILL]", "[TERM, SIGTERM]", "TERM"])(
+    "rejects invalid signal policy %j",
+    (signals) => {
+      const fixture = policyFile(`${base}\nallowed_signals: ${signals}\n`);
       try { expect(() => loadPolicy(fixture.path)).toThrow(); }
       finally { fixture.cleanup(); }
     },
