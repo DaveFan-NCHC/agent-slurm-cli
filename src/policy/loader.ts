@@ -8,6 +8,7 @@ const keys = [
   "allowed_partitions", "max_nodes", "max_ntasks", "max_cpus_per_task",
   "max_memory_gb", "max_gpus", "max_time_minutes", "max_wait_seconds", "max_log_lines", "max_log_bytes",
   "max_history_days", "max_history_jobs",
+  "max_array_tasks", "max_array_concurrency", "max_dependency_jobs", "allowed_dependency_types",
   "max_artifact_bytes", "allowed_apptainer_images", "allowed_virtualenvs", "allowed_gres",
   "max_script_bytes", "max_script_args", "max_script_arg_length",
   "require_apptainer_for_generated_scripts",
@@ -15,6 +16,9 @@ const keys = [
 
 const aliasPattern = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
 const fixedPathPattern = /^\/[A-Za-z0-9_./+-]+$/;
+const supportedDependencyTypes = new Set([
+  "after", "afterany", "aftercorr", "afternotok", "afterok", "singleton",
+]);
 
 function positive(value: unknown, key: string, defaultValue?: number): number {
   const resolved = value ?? defaultValue;
@@ -77,6 +81,20 @@ function booleanValue(value: unknown, key: string, defaultValue: boolean): boole
   return resolved;
 }
 
+function dependencyTypes(value: unknown): string[] {
+  const resolved = value ?? [];
+  if (!Array.isArray(resolved) ||
+      resolved.some((entry) => typeof entry !== "string" || !supportedDependencyTypes.has(entry)) ||
+      new Set(resolved).size !== resolved.length) {
+    throw new AgentError(
+      "CONFIGURATION_ERROR",
+      "allowed_dependency_types must contain unique supported dependency types.",
+      ExitCode.General,
+    );
+  }
+  return resolved as string[];
+}
+
 export function loadPolicy(path: string): Policy {
   let raw: unknown;
   try {
@@ -107,6 +125,10 @@ export function loadPolicy(path: string): Policy {
     maxWaitSeconds: positive(data.max_wait_seconds, "max_wait_seconds", 86400),
     maxHistoryDays: positive(data.max_history_days, "max_history_days", 30),
     maxHistoryJobs: positive(data.max_history_jobs, "max_history_jobs", 200),
+    maxArrayTasks: nonNegative(data.max_array_tasks, "max_array_tasks", 0),
+    maxArrayConcurrency: nonNegative(data.max_array_concurrency, "max_array_concurrency", 0),
+    maxDependencyJobs: nonNegative(data.max_dependency_jobs, "max_dependency_jobs", 0),
+    allowedDependencyTypes: dependencyTypes(data.allowed_dependency_types),
     maxLogLines: positive(data.max_log_lines, "max_log_lines", 1000),
     maxLogBytes: positive(data.max_log_bytes, "max_log_bytes", 1048576),
     maxArtifactBytes: positive(data.max_artifact_bytes, "max_artifact_bytes", 104857600),

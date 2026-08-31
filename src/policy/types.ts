@@ -9,6 +9,10 @@ export interface Policy {
   maxWaitSeconds: number;
   maxHistoryDays: number;
   maxHistoryJobs: number;
+  maxArrayTasks: number;
+  maxArrayConcurrency: number;
+  maxDependencyJobs: number;
+  allowedDependencyTypes: string[];
   maxLogLines: number;
   maxLogBytes: number;
   maxArtifactBytes: number;

@@ -15,4 +15,9 @@ describe("trusted submission runner", () => {
     expect(TRUSTED_RUNNER).toContain('/slurm-agent/submission/payload "$@"');
     expect(TRUSTED_RUNNER).toContain('exec "${SLURM_AGENT_PAYLOAD}" "$@"');
   });
+
+  it("uses the stable array task ID for per-task artifacts", () => {
+    expect(TRUSTED_RUNNER).toContain('artifact_job_id="${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}"');
+    expect(TRUSTED_RUNNER).toContain('job_artifact_dir="${SLURM_AGENT_ARTIFACT_ROOT}/${artifact_job_id}"');
+  });
 });

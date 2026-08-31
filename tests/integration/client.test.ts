@@ -7,6 +7,8 @@ const policy: Policy = {
   allowedPartitions: ["slurm-test"], maxNodes: 2, maxNtasks: 16, maxCpusPerTask: 8,
   maxMemoryGb: 64, maxGpus: 4, maxTimeMinutes: 240, maxWaitSeconds: 3600,
   maxHistoryDays: 30, maxHistoryJobs: 200,
+  maxArrayTasks: 1000, maxArrayConcurrency: 32, maxDependencyJobs: 16,
+  allowedDependencyTypes: ["after", "afterany", "aftercorr", "afternotok", "afterok", "singleton"],
   maxLogLines: 1000, maxLogBytes: 1024,
   maxArtifactBytes: 4096,
   allowedApptainerImages: { pytorch: "/opt/apptainer/pytorch.sif" },
@@ -60,6 +62,38 @@ describe("Slurm client security boundaries", () => {
     expect(submit.args.slice(-2)).toEqual(["--epochs", "20"]);
     expect(remote.uploads).toHaveLength(2);
     expect(remote.uploads[0]?.remotePath).toBe("/work/.slurm-agent/submissions/staged/payload");
+  });
+
+  it("submits bounded arrays with owned dependencies and array-safe output paths", async () => {
+    const remote = new MockExecutor([
+      ok("77|alice|prepare|slurm-test|RUNNING|00:01\n"),
+      ok("/work\n"), ok(), ok("/work/.slurm-agent/logs\n"),
+      ok("/work/.slurm-agent/artifacts\n"), ok("/work/.slurm-agent/submissions/staged\n"), ok("12345\n"),
+    ]);
+    const client = new SlurmClient(remote, "alice", "/work", policy);
+    await expect(client.submit({
+      script: "jobs/test.sh", partition: "slurm-test", nodes: 1, ntasks: 1, cpusPerTask: 1,
+      memory: "1G", time: "00:10:00", memoryGb: 1, timeMinutes: 10,
+      array: "0-9%2", arrayTaskCount: 10, arrayConcurrency: 2,
+      dependency: "afterok:77", dependencyJobIds: ["77"], scriptArgs: [],
+    }, prepared)).resolves.toBe("12345");
+    const submit = remote.commands.at(-1)!;
+    expect(submit.args).toContain("--array=0-9%2");
+    expect(submit.args).toContain("--dependency=afterok:77");
+    expect(submit.args).toContain("--output=/work/.slurm-agent/logs/%A_%a.out");
+    expect(submit.args).toContain("--error=/work/.slurm-agent/logs/%A_%a.err");
+    expect(remote.commands[0]).toMatchObject({ executable: "squeue" });
+  });
+
+  it("rejects a dependency on another user's job before submission", async () => {
+    const remote = new MockExecutor([ok("77|bob|prepare|slurm-test|RUNNING|00:01\n")]);
+    const client = new SlurmClient(remote, "alice", "/work", policy);
+    await expect(client.submit({
+      script: "jobs/test.sh", partition: "slurm-test", nodes: 1, ntasks: 1, cpusPerTask: 1,
+      memory: "1G", time: "00:10:00", memoryGb: 1, timeMinutes: 10,
+      dependency: "afterok:77", dependencyJobIds: ["77"], scriptArgs: [],
+    }, prepared)).rejects.toMatchObject({ code: "JOB_NOT_OWNED_BY_USER" });
+    expect(remote.commands.some((command) => command.executable === "sbatch")).toBe(false);
   });
 
   it("queries only policy-allowed partitions for cluster information", async () => {
@@ -296,6 +330,21 @@ describe("Slurm client security boundaries", () => {
     expect(remote.commands.some((command) => command.executable === "scancel")).toBe(false);
   });
 
+  it("cancels an owned array through its parent job ID", async () => {
+    const remote = new MockExecutor([
+      ok("44_0|alice|job|p|PENDING|00:00\n44_1|alice|job|p|RUNNING|00:01\n"), ok(),
+    ]);
+    const client = new SlurmClient(remote, "alice", "/work", policy);
+    await expect(client.cancel("44")).resolves.toBeUndefined();
+    expect(remote.commands.at(-1)).toEqual({ executable: "scancel", args: ["44"] });
+  });
+
+  it("requires an explicit array task ID for per-task operations", async () => {
+    const remote = new MockExecutor([ok("44_0|alice|job|p|RUNNING|00:01\n")]);
+    const client = new SlurmClient(remote, "alice", "/work", policy);
+    await expect(client.getOwnedJob("44")).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+  });
+
   it("reads only the fixed per-job log after ownership and containment checks", async () => {
     const remote = new MockExecutor([
       ok("44|alice|job|p|RUNNING|00:01\n"), ok("/work\n"), ok("/work/.slurm-agent/logs/44.out\n"),
@@ -304,6 +353,17 @@ describe("Slurm client security boundaries", () => {
     const client = new SlurmClient(remote, "alice", "/work", policy);
     await expect(client.logs("44", "stdout", 20)).resolves.toMatchObject({ content: "hello\n" });
     expect(remote.commands.at(-1)).toMatchObject({ executable: "tail", maxOutputBytes: 1024 });
+  });
+
+  it("reads an individual array task log using its array task ID", async () => {
+    const remote = new MockExecutor([
+      ok("44_7|alice|job|p|RUNNING|00:01\n"), ok("/work\n"), ok("/work/.slurm-agent/logs/44_7.out\n"),
+      { ...ok("task 7\n"), stdoutTruncated: false },
+    ]);
+    const client = new SlurmClient(remote, "alice", "/work", policy);
+    await expect(client.logs("44_7", "stdout", 20)).resolves.toMatchObject({
+      job_id: "44_7", content: "task 7\n",
+    });
   });
 
   it("downloads only from the owned job artifact directory", async () => {

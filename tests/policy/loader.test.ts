@@ -36,6 +36,10 @@ allowed_virtualenvs:
       expect(policy.maxWaitSeconds).toBe(86400);
       expect(policy.maxHistoryDays).toBe(30);
       expect(policy.maxHistoryJobs).toBe(200);
+      expect(policy.maxArrayTasks).toBe(0);
+      expect(policy.maxArrayConcurrency).toBe(0);
+      expect(policy.maxDependencyJobs).toBe(0);
+      expect(policy.allowedDependencyTypes).toEqual([]);
     } finally { fixture.cleanup(); }
   });
 
@@ -45,6 +49,10 @@ max_gpus: 4
 max_wait_seconds: 7200
 max_history_days: 14
 max_history_jobs: 75
+max_array_tasks: 500
+max_array_concurrency: 20
+max_dependency_jobs: 4
+allowed_dependency_types: [afterok, afterany]
 allowed_gres:
   a100x2: gpu:a100:2
 `);
@@ -54,6 +62,10 @@ allowed_gres:
       expect(policy.maxWaitSeconds).toBe(7200);
       expect(policy.maxHistoryDays).toBe(14);
       expect(policy.maxHistoryJobs).toBe(75);
+      expect(policy.maxArrayTasks).toBe(500);
+      expect(policy.maxArrayConcurrency).toBe(20);
+      expect(policy.maxDependencyJobs).toBe(4);
+      expect(policy.allowedDependencyTypes).toEqual(["afterok", "afterany"]);
       expect(policy.allowedGres.a100x2).toBe("gpu:a100:2");
     } finally { fixture.cleanup(); }
   });
@@ -83,4 +95,13 @@ allowed_gres:
     try { expect(() => loadPolicy(fixture.path)).toThrow(); }
     finally { fixture.cleanup(); }
   });
+
+  it.each(["[afterok, expand]", "[afterok, afterok]", "afterok"])(
+    "rejects invalid dependency type policy %j",
+    (types) => {
+      const fixture = policyFile(`${base}\nallowed_dependency_types: ${types}\n`);
+      try { expect(() => loadPolicy(fixture.path)).toThrow(); }
+      finally { fixture.cleanup(); }
+    },
+  );
 });

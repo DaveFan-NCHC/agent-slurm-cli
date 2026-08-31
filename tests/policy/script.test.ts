@@ -9,6 +9,8 @@ const policy: Policy = {
   allowedPartitions: ["p"], maxNodes: 1, maxNtasks: 1, maxCpusPerTask: 1,
   maxMemoryGb: 1, maxGpus: 0, maxTimeMinutes: 10, maxWaitSeconds: 60,
   maxHistoryDays: 7, maxHistoryJobs: 20,
+  maxArrayTasks: 100, maxArrayConcurrency: 10, maxDependencyJobs: 8,
+  allowedDependencyTypes: ["afterok", "afterany"],
   maxLogLines: 10, maxLogBytes: 1024,
   maxArtifactBytes: 1024, allowedApptainerImages: {}, allowedVirtualenvs: {},
   allowedGres: {},

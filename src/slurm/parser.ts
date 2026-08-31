@@ -13,23 +13,28 @@ export function parseQueueList(output: string): JobSummary[] {
 }
 
 export function parseQueueJob(output: string): OwnedJob | undefined {
-  const fields = rows(output)[0];
-  if (!fields) return undefined;
-  if (fields.length !== 6) throw new AgentError("SLURM_QUERY_FAILED", "Unexpected squeue output.", ExitCode.SlurmFailure);
-  return { job_id: fields[0]!, user: fields[1]!, name: fields[2]!, partition: fields[3]!, state: fields[4]!, elapsed: fields[5]! };
+  return parseQueueJobs(output)[0];
+}
+
+export function parseQueueJobs(output: string): OwnedJob[] {
+  return rows(output).map((fields) => {
+    if (fields.length !== 6) throw new AgentError("SLURM_QUERY_FAILED", "Unexpected squeue output.", ExitCode.SlurmFailure);
+    return { job_id: fields[0]!, user: fields[1]!, name: fields[2]!, partition: fields[3]!, state: fields[4]!, elapsed: fields[5]! };
+  });
 }
 
 export function parseAccountingJob(output: string, requestedId: string): OwnedJob | undefined {
-  for (const fields of rows(output)) {
+  return parseAccountingJobs(output).find((job) => job.job_id === requestedId);
+}
+
+export function parseAccountingJobs(output: string): OwnedJob[] {
+  return rows(output).map((fields) => {
     if (fields.length !== 7) throw new AgentError("SLURM_QUERY_FAILED", "Unexpected sacct output.", ExitCode.SlurmFailure);
-    if (fields[0] === requestedId) {
-      return {
-        job_id: fields[0]!, user: fields[1]!, name: fields[2]!, partition: fields[3]!,
-        state: fields[4]!, elapsed: fields[5]!, exit_code: fields[6]!,
-      };
-    }
-  }
-  return undefined;
+    return {
+      job_id: fields[0]!, user: fields[1]!, name: fields[2]!, partition: fields[3]!,
+      state: fields[4]!, elapsed: fields[5]!, exit_code: fields[6]!,
+    };
+  });
 }
 
 export function parseSubmittedJobId(output: string): string {

@@ -97,6 +97,10 @@ max_time_minutes: 60
 max_wait_seconds: 60
 max_history_days: 30
 max_history_jobs: 100
+max_array_tasks: 100
+max_array_concurrency: 10
+max_dependency_jobs: 8
+allowed_dependency_types: [afterok, afterany, afternotok]
 allowed_gres:
   gpu1: gpu:1
 require_apptainer_for_generated_scripts: false
@@ -104,7 +108,7 @@ require_apptainer_for_generated_scripts: false
       const remote = new SubmitExecutor();
       const stdout = new Sink();
       const code = await main(
-        ["submit", "-p", "p", "-N", "1", "-n", "1", "-c", "1", "--mem", "1G", "--gpus", "1", "-t", "00:10:00", "jobs/train.sh", "--epochs", "2"],
+        ["submit", "-p", "p", "-N", "1", "-n", "1", "-c", "1", "--mem", "1G", "--gpus", "1", "--array", "0-3%2", "-t", "00:10:00", "jobs/train.sh", "--epochs", "2"],
         {
           SLURM_SSH_HOST: "host", SLURM_SSH_USER: "alice", SLURM_SSH_KEY_PATH: join(root, "key"),
           SLURM_SSH_KNOWN_HOSTS: join(root, "known_hosts"), SLURM_REMOTE_WORKSPACE: "/work",
@@ -115,10 +119,40 @@ require_apptainer_for_generated_scripts: false
         () => remote,
       );
       expect(code).toBe(0);
-      expect(JSON.parse(stdout.value)).toMatchObject({ ok: true, job_id: "12345" });
+      expect(JSON.parse(stdout.value)).toMatchObject({
+        ok: true, job_id: "12345", array: { spec: "0-3%2", task_count: 4, concurrency: 2 },
+      });
       expect(remote.commands.at(-1)?.args.slice(-2)).toEqual(["--epochs", "2"]);
       expect(remote.commands.at(-1)?.args).toContain("--gpus=1");
+      expect(remote.commands.at(-1)?.args).toContain("--array=0-3%2");
+      expect(remote.commands.at(-1)?.args).toContain("--output=/work/.slurm-agent/logs/%A_%a.out");
       expect(remote.uploads).toHaveLength(2);
+
+      const dependencyRemote = new QueryExecutor([
+        { stdout: "77|alice|prepare|p|RUNNING|00:01\n", stderr: "", exitCode: 0 },
+        { stdout: "/work\n", stderr: "", exitCode: 0 },
+        { stdout: "", stderr: "", exitCode: 0 },
+        { stdout: "/work/.slurm-agent/logs\n", stderr: "", exitCode: 0 },
+        { stdout: "/work/.slurm-agent/artifacts\n", stderr: "", exitCode: 0 },
+        { stdout: "/work/.slurm-agent/submissions/staged\n", stderr: "", exitCode: 0 },
+        { stdout: "12346\n", stderr: "", exitCode: 0 },
+      ]);
+      const dependencyOutput = new Sink();
+      expect(await main(
+        ["submit", "-p", "p", "--dependency", "afterok:77", "jobs/train.sh"],
+        {
+          SLURM_SSH_HOST: "host", SLURM_SSH_USER: "alice", SLURM_SSH_KEY_PATH: join(root, "key"),
+          SLURM_SSH_KNOWN_HOSTS: join(root, "known_hosts"), SLURM_REMOTE_WORKSPACE: "/work",
+          SLURM_LOCAL_JOB_WORKSPACE: root, SLURM_POLICY_PATH: join(root, "policy.yaml"),
+        },
+        dependencyOutput,
+        new Sink() as never,
+        () => dependencyRemote,
+      )).toBe(0);
+      expect(JSON.parse(dependencyOutput.value)).toMatchObject({
+        ok: true, job_id: "12346", dependency: "afterok:77",
+      });
+      expect(dependencyRemote.commands.at(-1)?.args).toContain("--dependency=afterok:77");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -140,6 +174,10 @@ max_time_minutes: 60
 max_wait_seconds: 60
 max_history_days: 30
 max_history_jobs: 100
+max_array_tasks: 100
+max_array_concurrency: 10
+max_dependency_jobs: 8
+allowed_dependency_types: [afterok, afterany, afternotok]
 require_apptainer_for_generated_scripts: false
 `);
       const env = {

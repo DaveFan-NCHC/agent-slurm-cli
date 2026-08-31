@@ -6,8 +6,8 @@ import type { NormalizedSubmit } from "../policy/validator.js";
 import type { Policy } from "../policy/types.js";
 import type { RemoteExecutor, RemoteResult, SafeCommand } from "../transport/types.js";
 import {
-  parseAccountingJob, parseClusterInfo, parseHistory, parseJobUsage, parseLiveUsage,
-  parseQueueJob, parseQueueList, parseSubmittedJobId,
+  parseAccountingJobs, parseClusterInfo, parseHistory, parseJobUsage, parseLiveUsage,
+  parseQueueJobs, parseQueueList, parseSubmittedJobId,
 } from "./parser.js";
 import type { ArtifactResult, HistoryJob, JobSummary, JobUsage, LogResult, OwnedJob, PartitionInfo, WaitResult } from "./types.js";
 import { TRUSTED_RUNNER } from "./runner.js";
@@ -21,6 +21,10 @@ function validateExportPath(path: string, label: string): string {
     throw new AgentError("RUNTIME_NOT_FOUND", `${label} resolves to a path that cannot be safely exported.`, ExitCode.General);
   }
   return path;
+}
+
+function matchesJobReference(reference: string, candidate: string): boolean {
+  return candidate === reference || (!reference.includes("_") && candidate.startsWith(`${reference}_`));
 }
 
 export class SlurmClient {
@@ -66,7 +70,7 @@ export class SlurmClient {
   }
 
   async list(): Promise<JobSummary[]> {
-    const result = await this.run({ executable: "squeue", args: ["--noheader", "--user", this.user, "--format=%i|%j|%P|%T|%M"] });
+    const result = await this.run({ executable: "squeue", args: ["--noheader", "--array", "--user", this.user, "--format=%i|%j|%P|%T|%M"] });
     if (result.exitCode !== 0) failure(result, "SLURM_QUERY_FAILED", "Unable to list Slurm jobs.");
     return parseQueueList(result.stdout);
   }
@@ -108,19 +112,67 @@ export class SlurmClient {
   }
 
   async getOwnedJob(jobId: string): Promise<OwnedJob> {
-    const active = await this.run({ executable: "squeue", args: ["--noheader", "--jobs", jobId, "--format=%i|%u|%j|%P|%T|%M"] });
+    const active = await this.run({ executable: "squeue", args: ["--noheader", "--array", "--jobs", jobId, "--format=%i|%u|%j|%P|%T|%M"] });
     if (active.exitCode === 0) {
-      const job = parseQueueJob(active.stdout);
+      const activeJobs = parseQueueJobs(active.stdout);
+      const job = activeJobs.find((candidate) => candidate.job_id === jobId);
       if (job) return this.assertOwner(job);
+      if (!jobId.includes("_") && activeJobs.some((candidate) => matchesJobReference(jobId, candidate.job_id))) {
+        throw new AgentError(
+          "INVALID_ARGUMENT",
+          `Job ${jobId} is an array parent; use an explicit array task ID such as ${jobId}_0 for this operation.`,
+          ExitCode.InvalidArguments,
+        );
+      }
     }
     const accounting = await this.run({
       executable: "sacct",
       args: ["--noheader", "--parsable2", "--allocations", "--jobs", jobId, "--format=JobIDRaw,User,JobName,Partition,State,Elapsed,ExitCode"],
     });
     if (accounting.exitCode !== 0) failure(accounting, "SLURM_QUERY_FAILED", "Unable to query Slurm accounting.");
-    const job = parseAccountingJob(accounting.stdout, jobId);
-    if (!job) throw new AgentError("JOB_NOT_FOUND", `Job ${jobId} was not found.`, ExitCode.NotFound);
+    const accountingJobs = parseAccountingJobs(accounting.stdout);
+    const job = accountingJobs.find((candidate) => candidate.job_id === jobId);
+    if (!job) {
+      if (!jobId.includes("_") && accountingJobs.some((candidate) => matchesJobReference(jobId, candidate.job_id))) {
+        throw new AgentError(
+          "INVALID_ARGUMENT",
+          `Job ${jobId} is an array parent; use an explicit array task ID such as ${jobId}_0 for this operation.`,
+          ExitCode.InvalidArguments,
+        );
+      }
+      throw new AgentError("JOB_NOT_FOUND", `Job ${jobId} was not found.`, ExitCode.NotFound);
+    }
     return this.assertOwner(job);
+  }
+
+  private async assertOwnedJobReference(jobId: string): Promise<void> {
+    const active = await this.run({
+      executable: "squeue",
+      args: ["--noheader", "--array", "--jobs", jobId, "--format=%i|%u|%j|%P|%T|%M"],
+      maxOutputBytes: 1048576,
+    });
+    if (active.exitCode === 0) {
+      if (active.stdoutTruncated) {
+        throw new AgentError("SLURM_QUERY_FAILED", "Slurm job ownership output exceeded the safe limit.", ExitCode.SlurmFailure);
+      }
+      const matches = parseQueueJobs(active.stdout).filter((job) => matchesJobReference(jobId, job.job_id));
+      if (matches.length > 0) {
+        for (const job of matches) this.assertOwner(job);
+        return;
+      }
+    }
+    const accounting = await this.run({
+      executable: "sacct",
+      args: ["--noheader", "--parsable2", "--allocations", "--jobs", jobId, "--format=JobIDRaw,User,JobName,Partition,State,Elapsed,ExitCode"],
+      maxOutputBytes: 1048576,
+    });
+    if (accounting.exitCode !== 0) failure(accounting, "SLURM_QUERY_FAILED", "Unable to query Slurm accounting.");
+    if (accounting.stdoutTruncated) {
+      throw new AgentError("SLURM_QUERY_FAILED", "Slurm job ownership output exceeded the safe limit.", ExitCode.SlurmFailure);
+    }
+    const matches = parseAccountingJobs(accounting.stdout).filter((job) => matchesJobReference(jobId, job.job_id));
+    if (matches.length === 0) throw new AgentError("JOB_NOT_FOUND", `Job ${jobId} was not found.`, ExitCode.NotFound);
+    for (const job of matches) this.assertOwner(job);
   }
 
   async usage(jobId: string): Promise<JobUsage> {
@@ -174,6 +226,9 @@ export class SlurmClient {
     if (this.policy.requireApptainerForGeneratedScripts && !options.apptainerImagePath) {
       throw new AgentError("RUNTIME_REQUIRED", "Policy requires an approved Apptainer image for agent-generated scripts.", ExitCode.PolicyDenied);
     }
+    for (const dependencyJobId of options.dependencyJobIds ?? []) {
+      await this.assertOwnedJobReference(dependencyJobId);
+    }
     const workspaceReal = await this.workspaceRealpath();
     const apptainerImageReal = options.apptainerImagePath
       ? await this.runtimePath(options.apptainerImagePath, "apptainer")
@@ -225,15 +280,18 @@ export class SlurmClient {
       exportedEnvironment.push(`SLURM_AGENT_SUBMISSION_DIR=${submissionDirectoryReal}`);
       exportedEnvironment.push(`SLURM_AGENT_WORKSPACE=${workspaceReal}`);
     }
+    const logIdPattern = options.array ? "%A_%a" : "%j";
     const args = [
       "--parsable", `--chdir=${workspaceReal}`, `--partition=${options.partition}`, `--nodes=${options.nodes}`,
       `--ntasks=${options.ntasks}`, `--cpus-per-task=${options.cpusPerTask}`, `--mem=${options.memory}`,
-      `--time=${options.time}`, `--output=${logDirectoryReal}/%j.out`, `--error=${logDirectoryReal}/%j.err`,
+      `--time=${options.time}`, `--output=${logDirectoryReal}/${logIdPattern}.out`, `--error=${logDirectoryReal}/${logIdPattern}.err`,
       `--export=${exportedEnvironment.join(",")}`,
     ];
     if (options.jobName) args.push(`--job-name=${options.jobName}`);
     if (options.gpus !== undefined) args.push(`--gpus=${options.gpus}`);
     if (options.gresValue !== undefined) args.push(`--gres=${options.gresValue}`);
+    if (options.array !== undefined) args.push(`--array=${options.array}`);
+    if (options.dependency !== undefined) args.push(`--dependency=${options.dependency}`);
     args.push("--", runnerPath, ...options.scriptArgs);
     const result = await this.run({ executable: "sbatch", args });
     if (result.exitCode !== 0) failure(result, "SLURM_SUBMIT_FAILED", "Slurm rejected the submission.");
@@ -241,7 +299,7 @@ export class SlurmClient {
   }
 
   async cancel(jobId: string): Promise<void> {
-    await this.getOwnedJob(jobId);
+    await this.assertOwnedJobReference(jobId);
     const result = await this.run({ executable: "scancel", args: [jobId] });
     if (result.exitCode !== 0) failure(result, "SLURM_CANCEL_FAILED", `Unable to cancel job ${jobId}.`);
   }

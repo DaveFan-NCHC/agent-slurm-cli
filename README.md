@@ -34,7 +34,7 @@ slurm-agent --version
 For production, publish and install a pinned version during image/host bootstrap:
 
 ```bash
-npm install -g @nchc/slurm-agent@0.4.0
+npm install -g @nchc/slurm-agent@0.5.0
 command -v slurm-agent
 ```
 
@@ -75,11 +75,17 @@ allowed_gres:
 max_wait_seconds: 86400
 max_history_days: 30
 max_history_jobs: 200
+max_array_tasks: 1000
+max_array_concurrency: 32
+max_dependency_jobs: 16
+allowed_dependency_types: [after, afterany, aftercorr, afternotok, afterok, singleton]
 max_script_bytes: 65536
 max_script_args: 32
 max_script_arg_length: 1024
 require_apptainer_for_generated_scripts: true
 ```
+
+Arrays and dependencies are opt-in for upgrades: if their new policy keys are omitted, their limits and dependency allowlist default to disabled. Set the bounded values explicitly as above to enable them.
 
 Aliases are accepted from the CLI; raw image, virtualenv, and GRES values are not. `max_gpus: 0` disables direct `--gpus` requests.
 
@@ -138,6 +144,24 @@ slurm-agent submit -p slurm-test --gres a100x1 --apptainer-image pytorch jobs/tr
 
 `--gres` never accepts a raw Slurm GRES expression. The CLI maps the alias through `allowed_gres` before constructing `sbatch`.
 
+Submit a job array with Slurm indexes, ranges, optional steps, and a concurrency cap:
+
+```bash
+slurm-agent submit -p slurm-test --array '0-99%10' jobs/process.sh
+slurm-agent submit -p slurm-test --array '1,3,5-15:2%4' jobs/process.sh
+```
+
+Each array task receives `SLURM_ARRAY_TASK_ID`. The expanded task count must not exceed `max_array_tasks`; its explicit or implied concurrency must not exceed `max_array_concurrency`. Therefore an array larger than the concurrency policy must include a `%CONCURRENCY` cap. The JSON response includes the normalized task count and concurrency. Use task IDs such as `12345_7` with per-task `status`, `usage`, `wait`, `logs`, `artifact`, or `cancel`; cancelling the parent `12345` cancels the owned whole array.
+
+Submit a job after policy-approved conditions on owned jobs:
+
+```bash
+slurm-agent submit -p slurm-test --dependency afterok:12345 jobs/train.sh
+slurm-agent submit -p slurm-test --dependency afterok:12345:12346,afternotok:12347 jobs/finalize.sh
+```
+
+Dependency clauses are combined with AND. OR (`?`), offsets, arbitrary expressions, cross-user references, disallowed types, and more than `max_dependency_jobs` references are rejected. `allowed_dependency_types` controls the accepted subset of `after`, `afterany`, `aftercorr`, `afternotok`, `afterok`, and `singleton`. `aftercorr` requires the new submission to be an array; `singleton` requires an explicit `--job-name` so its serialization scope is deliberate.
+
 With the default secure policy, agent-generated scripts require an approved Apptainer alias. The CLI-generated runner forces execution through `--containall` and `--cleanenv`, mounts the remote workspace read-only, and mounts only that job's controlled artifact directory read-write. The agent script does not invoke Apptainer itself:
 
 ```bash
@@ -168,7 +192,7 @@ slurm-agent cancel 12345
 
 `usage` verifies ownership and returns allocation/step accounting including CPU time, peak RSS/VM size, disk I/O, requested and allocated TRES, and exit status. CPU efficiency is `TotalCPU / (ElapsedRaw × AllocCPUS)`. Memory efficiency compares the largest reported step `MaxRSS` with the requested memory after applying Slurm's per-CPU (`c`) or per-node (`n`) scope; it is an estimate for multi-task jobs. An efficiency field is omitted when its inputs are unavailable. For non-pending active jobs, `live_steps` comes from `sstat`; `live_available: false` means live metrics were unavailable, while accounting data remains valid.
 
-Submissions always set output files to `.slurm-agent/logs/%j.out` and `%j.err` under the real remote workspace. `logs` can read only those generated names, limits lines and bytes, and verifies the resolved path is still inside the workspace. Consequently, `logs` does not read arbitrary output paths from jobs submitted outside this CLI.
+Submissions always set output files under `.slurm-agent/logs` in the real remote workspace. Regular jobs use `%j.out`/`%j.err`; arrays use `%A_%a.out`/`%A_%a.err`, matching task IDs such as `12345_7`. `logs` can read only those generated names, limits lines and bytes, and verifies the resolved path is still inside the workspace. Consequently, `logs` does not read arbitrary output paths from jobs submitted outside this CLI.
 
 ### Job artifacts
 
@@ -214,12 +238,12 @@ Errors retain a stable machine-readable code, for example:
 ## Security model and limitations
 
 - Every remote command consists of a compile-time executable allowlist plus separately shell-quoted arguments; no shell fragments are accepted.
-- Job IDs, partition names, script segments, job names, resource units, and times use strict grammars. Unknown flags and duplicate flags are rejected.
+- Job IDs, array specifications, dependencies, partition names, script segments, job names, resource units, and times use strict grammars. Unknown flags and duplicate flags are rejected.
 - Runtime selection accepts only policy-defined logical aliases. Apptainer images must resolve to regular files; virtual environments must contain an executable `bin/python`. Raw runtime paths, image URIs, bind mounts, and caller-provided commands are unavailable.
 - Agent scripts come only from `SLURM_LOCAL_JOB_WORKSPACE`; symlinks, traversal, oversized files, invalid UTF-8, missing shebangs, and embedded `#SBATCH` directives are rejected. The exact bytes are hashed before upload.
 - Upload destinations are random, CLI-generated directories below `.slurm-agent/submissions`; callers cannot select a remote destination. Payload and trusted runner uploads use temporary files followed by atomic rename.
 - The batch environment exports only controlled `SLURM_AGENT_*` values, not the complete SSH process environment.
-- `cancel`, `status`, `usage`, `wait`, `logs`, and `artifact` confirm that Slurm reports the configured user as owner. `history` fixes its query to that user and rejects unexpected cross-user rows.
+- `cancel`, `status`, `usage`, `wait`, `logs`, and `artifact` confirm that Slurm reports the configured user as owner. Dependency references receive the same ownership check before submission. `history` fixes its query to that user and rejects unexpected cross-user rows.
 - Script and log paths are checked with remote `realpath`, preventing traversal and symlink escape.
 - Artifact transfer is an internal, single-file SFTP stream after remote containment checks; it is not an SFTP browser. The destination is derived from trusted configuration and the job ID, and is created without overwrite.
 - Audit records never contain private keys, credentials, command stderr, or environment values.
@@ -227,7 +251,7 @@ Errors retain a stable machine-readable code, for example:
 - Cluster-wide enforcement still belongs in Slurm configuration such as account/QOS limits and `job_submit` policy; the CLI policy is an additional capability boundary, not a replacement for scheduler controls.
 - Completed-job lookup depends on Slurm accounting (`sacct`) retention and permissions. If no allocation record is visible, the CLI reports `JOB_NOT_FOUND`.
 - Live resource metrics depend on Slurm's `jobacct_gather` support. If `sstat` is unavailable for a running job, `usage` returns accounting data with `live_available: false`.
-- SSH certificates, encrypted private keys requiring an interactive passphrase, wildcard/hashed `known_hosts` entries, job arrays, and federation IDs are not supported in this first release.
+- SSH certificates, encrypted private keys requiring an interactive passphrase, wildcard/hashed `known_hosts` entries, dependency OR/offset expressions, and federation IDs are not supported.
 - Submitted staging directories are retained for reproducibility in this release; production deployments should apply an operator-controlled retention policy.
 
 ## Development

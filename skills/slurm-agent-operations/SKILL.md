@@ -1,6 +1,6 @@
 ---
 name: slurm-agent-operations
-description: "Operate jobs through the constrained slurm-agent CLI, including cluster information, GPU-aware submission, history, resource usage, waiting, listing, status, logs, cancellation, and controlled artifact downloads. Use for Slurm job lifecycle requests handled by this project; do not use it for cluster administration or generic SSH access."
+description: "Operate jobs through the constrained slurm-agent CLI, including GPU-aware arrays and dependencies, cluster information, history, resource usage, waiting, listing, status, logs, cancellation, and controlled artifact downloads. Use for Slurm job lifecycle requests handled by this project; do not use it for cluster administration or generic SSH access."
 ---
 
 # Slurm Agent Operations
@@ -70,7 +70,24 @@ slurm-agent submit \
   jobs/example.sh --epochs 20
 ```
 
-Defaults are one node, one task, one CPU per task, `1G`, and `01:00:00`. Resource values and the partition must remain within the configured policy. Record the returned `job_id`; use only that decimal ID in later commands.
+Defaults are one node, one task, one CPU per task, `1G`, and `01:00:00`. Resource values and the partition must remain within the configured policy. Record the returned `job_id`; use that ID, or an explicit array task ID such as `12345_7`, in later commands.
+
+Submit an array only with bounded indexes and explicit concurrency when policy requires it:
+
+```bash
+slurm-agent submit ... --array '0-99%10'
+```
+
+The task count and concurrency must fit `max_array_tasks` and `max_array_concurrency`. Each task receives `SLURM_ARRAY_TASK_ID`. Use `12345_7` for per-task status, usage, wait, logs, artifact, or cancellation. Cancelling the parent ID cancels the entire owned array, so do that only when the user explicitly requests the whole array.
+
+Submit dependencies only with policy-approved AND conditions on owned jobs:
+
+```bash
+slurm-agent submit ... --dependency afterok:12345
+slurm-agent submit ... --dependency afterok:12345:12346,afternotok:12347
+```
+
+Do not invent or broaden dependency references. OR conditions, offsets, cross-user jobs, disallowed types, and reference counts above policy are unavailable. Use `aftercorr` only for a new array submission, and use `singleton` only with an explicit `--job-name`.
 
 Request GPUs with at most one of these policy-controlled forms:
 
@@ -120,7 +137,7 @@ Only `stdout` and `stderr` are valid streams. Respect the configured line and by
 slurm-agent cancel 12345
 ```
 
-Cancellation changes external state. Run it only when the user has requested cancellation of that explicit job ID. The CLI verifies existence and ownership before calling `scancel`; never broaden cancellation to a user, partition, or collection of jobs.
+Cancellation changes external state. Run it only when the user has requested cancellation of that explicit job or array task ID. A parent array ID cancels every task in that owned array, so use it only when the user explicitly requests whole-array cancellation. The CLI verifies existence and ownership before calling `scancel`; never broaden cancellation to a user, partition, or unrelated collection of jobs.
 
 ## Artifacts
 

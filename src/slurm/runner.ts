@@ -5,7 +5,12 @@ set -eu
 : "\${SLURM_AGENT_ARTIFACT_ROOT:?}"
 : "\${SLURM_AGENT_RUNTIME_KIND:?}"
 
-job_artifact_dir="\${SLURM_AGENT_ARTIFACT_ROOT}/\${SLURM_JOB_ID}"
+artifact_job_id="\${SLURM_JOB_ID}"
+if [ -n "\${SLURM_ARRAY_JOB_ID:-}" ]; then
+  : "\${SLURM_ARRAY_TASK_ID:?}"
+  artifact_job_id="\${SLURM_ARRAY_JOB_ID}_\${SLURM_ARRAY_TASK_ID}"
+fi
+job_artifact_dir="\${SLURM_AGENT_ARTIFACT_ROOT}/\${artifact_job_id}"
 /bin/mkdir -p -m 700 "\${job_artifact_dir}"
 
 case "\${SLURM_AGENT_RUNTIME_KIND}" in

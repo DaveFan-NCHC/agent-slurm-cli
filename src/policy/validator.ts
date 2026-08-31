@@ -10,6 +10,8 @@ export interface SubmitOptions {
   memory: string;
   gpus?: number;
   gres?: string;
+  array?: string;
+  dependency?: string;
   time: string;
   jobName?: string;
   apptainerImage?: string;
@@ -23,6 +25,9 @@ export interface NormalizedSubmit extends SubmitOptions {
   apptainerImagePath?: string;
   venvPath?: string;
   gresValue?: string;
+  arrayTaskCount?: number;
+  arrayConcurrency?: number;
+  dependencyJobIds?: string[];
 }
 
 const runtimeAliasPattern = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
@@ -59,6 +64,102 @@ export function validateHistoryState(value: string): string {
   const normalized = value.toUpperCase();
   if (!historyStates.has(normalized)) throw invalid("--state is not a supported Slurm job state.");
   return normalized;
+}
+
+function parseNonNegativeSafeInteger(text: string, label: string): number {
+  if (!/^\d+$/.test(text)) throw invalid(`${label} must be a non-negative integer.`);
+  const value = Number(text);
+  if (!Number.isSafeInteger(value)) throw invalid(`${label} is too large.`);
+  return value;
+}
+
+export function validateArray(value: string | undefined, policy: Policy): {
+  value?: string; taskCount?: number; concurrency?: number;
+} {
+  if (value === undefined) return {};
+  const throttleParts = value.split("%");
+  if (throttleParts.length > 2 || !throttleParts[0] || (throttleParts.length === 2 && !throttleParts[1])) {
+    throw invalid("--array must use INDEX[,INDEX|RANGE[:STEP]...][%CONCURRENCY].");
+  }
+  const entries = throttleParts[0]!.split(",");
+  if (entries.some((entry) => !entry)) throw invalid("--array contains an empty index expression.");
+  let taskCount = 0;
+  for (const entry of entries) {
+    const match = /^(\d+)(?:-(\d+)(?::([1-9]\d*))?)?$/.exec(entry);
+    if (!match) throw invalid("--array contains an invalid index expression.");
+    const start = parseNonNegativeSafeInteger(match[1]!, "Array index");
+    const end = match[2] === undefined ? start : parseNonNegativeSafeInteger(match[2], "Array index");
+    const step = match[3] === undefined ? 1 : parsePositiveInteger(match[3], "Array step");
+    if (end < start) throw invalid("--array range end must not be smaller than its start.");
+    const count = Math.floor((end - start) / step) + 1;
+    if (!Number.isSafeInteger(taskCount + count)) throw invalid("--array task count is too large.");
+    taskCount += count;
+    if (taskCount > policy.maxArrayTasks) {
+      throw policyDenied("RESOURCE_LIMIT_EXCEEDED", `array tasks exceed policy maximum ${policy.maxArrayTasks}.`);
+    }
+  }
+  const concurrency = throttleParts[1] === undefined
+    ? taskCount
+    : parsePositiveInteger(throttleParts[1], "Array concurrency");
+  if (concurrency > policy.maxArrayConcurrency) {
+    throw policyDenied(
+      "RESOURCE_LIMIT_EXCEEDED",
+      `array concurrency exceeds policy maximum ${policy.maxArrayConcurrency}; add or lower the %CONCURRENCY limit.`,
+    );
+  }
+  return { value, taskCount, concurrency };
+}
+
+export function validateDependency(value: string | undefined, policy: Policy): {
+  value?: string; jobIds?: string[]; types?: string[];
+} {
+  if (value === undefined) return {};
+  if (!value || value.includes("?")) {
+    throw invalid("--dependency must contain comma-separated AND conditions.");
+  }
+  const jobIds: string[] = [];
+  const types: string[] = [];
+  const clauses = value.split(",");
+  if (clauses.some((clause) => !clause)) throw invalid("--dependency contains an empty condition.");
+  if (clauses.length > policy.maxDependencyJobs) {
+    throw policyDenied(
+      "RESOURCE_LIMIT_EXCEEDED",
+      `dependency conditions exceed policy maximum ${policy.maxDependencyJobs}.`,
+    );
+  }
+  for (const clause of clauses) {
+    if (clause === "singleton") {
+      if (!policy.allowedDependencyTypes.includes("singleton")) {
+        throw policyDenied("DEPENDENCY_TYPE_NOT_ALLOWED", "Dependency type singleton is not permitted.");
+      }
+      types.push("singleton");
+      continue;
+    }
+    const separator = clause.indexOf(":");
+    const type = separator < 0 ? clause : clause.slice(0, separator);
+    const references = separator < 0 ? [] : clause.slice(separator + 1).split(":");
+    if (!policy.allowedDependencyTypes.includes(type)) {
+      throw policyDenied("DEPENDENCY_TYPE_NOT_ALLOWED", `Dependency type ${type || "(empty)"} is not permitted.`);
+    }
+    if (type === "singleton" || references.length === 0 || references.some((reference) => !reference)) {
+      throw invalid(`Dependency type ${type} requires one or more job IDs.`);
+    }
+    types.push(type);
+    for (const reference of references) {
+      const jobId = validateJobId(reference);
+      if (type === "aftercorr" && jobId.includes("_")) {
+        throw invalid("aftercorr must reference an array job ID, not an individual array task.");
+      }
+      jobIds.push(jobId);
+      if (jobIds.length > policy.maxDependencyJobs) {
+        throw policyDenied(
+          "RESOURCE_LIMIT_EXCEEDED",
+          `dependency job references exceed policy maximum ${policy.maxDependencyJobs}.`,
+        );
+      }
+    }
+  }
+  return { value, jobIds: [...new Set(jobIds)], types: [...new Set(types)] };
 }
 
 export function parseMemoryGb(text: string): number {
@@ -116,6 +217,14 @@ export function validateSubmit(options: SubmitOptions, policy: Policy): Normaliz
     }
   }
   const gresValue = resolveGresAlias(options.gres, policy.allowedGres);
+  const array = validateArray(options.array, policy);
+  const dependency = validateDependency(options.dependency, policy);
+  if (dependency.types?.includes("aftercorr") && !options.array) {
+    throw invalid("aftercorr requires the submitted job to use --array.");
+  }
+  if (dependency.types?.includes("singleton") && !options.jobName) {
+    throw invalid("singleton requires an explicit --job-name.");
+  }
   const apptainerImagePath = resolveRuntimeAlias(options.apptainerImage, policy.allowedApptainerImages, "Apptainer image");
   const venvPath = resolveRuntimeAlias(options.venv, policy.allowedVirtualenvs, "Virtual environment");
   if (policy.requireApptainerForGeneratedScripts && !apptainerImagePath) {
@@ -148,10 +257,16 @@ export function validateSubmit(options: SubmitOptions, policy: Policy): Normaliz
   if (timeMinutes > policy.maxTimeMinutes) {
     throw policyDenied("TIME_LIMIT_EXCEEDED", `time exceeds policy maximum ${policy.maxTimeMinutes} minutes.`);
   }
-  return { ...options, memoryGb, timeMinutes, apptainerImagePath, venvPath, gresValue };
+  return {
+    ...options, memoryGb, timeMinutes, apptainerImagePath, venvPath, gresValue,
+    arrayTaskCount: array.taskCount, arrayConcurrency: array.concurrency,
+    dependencyJobIds: dependency.jobIds,
+  };
 }
 
 export function validateJobId(value: string): string {
-  if (!/^[1-9]\d*$/.test(value)) throw invalid("Job ID must contain decimal digits only.", "INVALID_JOB_ID");
+  if (!/^[1-9]\d*(?:_\d+)?$/.test(value)) {
+    throw invalid("Job ID must be a decimal job ID or array task ID such as 12345_7.", "INVALID_JOB_ID");
+  }
   return value;
 }

@@ -21,7 +21,7 @@ import { SlurmClient } from "./slurm/client.js";
 import { SshExecutor } from "./transport/ssh.js";
 import type { RemoteExecutor } from "./transport/types.js";
 
-const VERSION = "0.4.0";
+const VERSION = "0.5.0";
 const HELP = `slurm-agent ${VERSION}
 
 Usage:
@@ -44,6 +44,8 @@ Submit options:
   --mem SIZE            default: 1G
   --gpus N              policy-bounded total GPU count
   --gres ALIAS          policy-defined GRES request
+  --array SPEC          array indexes/ranges with optional % concurrency
+  --dependency SPEC     policy-approved Slurm job dependencies
   -t, --time HH:MM:SS   default: 01:00:00
   -J, --job-name NAME
   --apptainer-image ALIAS
@@ -92,7 +94,10 @@ function parseArgs(argv: string[]): Parsed {
   return { command, positionals, options };
 }
 
-const submitOptions = ["partition", "nodes", "ntasks", "cpus-per-task", "mem", "gpus", "gres", "time", "job-name", "apptainer-image", "venv"];
+const submitOptions = [
+  "partition", "nodes", "ntasks", "cpus-per-task", "mem", "gpus", "gres", "array", "dependency",
+  "time", "job-name", "apptainer-image", "venv",
+];
 
 function enforceSubmitShape(parsed: Parsed): void {
   const unknown = [...parsed.options.keys()].filter((key) => !submitOptions.includes(key));
@@ -166,6 +171,8 @@ function parseSubmit(parsed: Parsed, policy: ReturnType<typeof loadPolicy>): Ret
     memory: parsed.options.get("mem") ?? "1G",
     gpus: parsed.options.has("gpus") ? parsePositiveInteger(parsed.options.get("gpus")!, "--gpus") : undefined,
     gres: parsed.options.get("gres"),
+    array: parsed.options.get("array"),
+    dependency: parsed.options.get("dependency"),
     time: parsed.options.get("time") ?? "01:00:00",
     jobName: parsed.options.get("job-name"),
     apptainerImage: parsed.options.get("apptainer-image"),
@@ -270,6 +277,7 @@ export async function main(
           ntasks: parsed.options.get("ntasks") ?? "1", cpus_per_task: parsed.options.get("cpus-per-task") ?? "1",
           memory: parsed.options.get("mem") ?? "1G", time: parsed.options.get("time") ?? "01:00:00",
           gpus: parsed.options.get("gpus"), gres: parsed.options.get("gres"),
+          array: parsed.options.get("array"), dependency: parsed.options.get("dependency"),
           apptainer_image: parsed.options.get("apptainer-image"), venv: parsed.options.get("venv"),
         };
         const submitOptions = parseSubmit(parsed, policy);

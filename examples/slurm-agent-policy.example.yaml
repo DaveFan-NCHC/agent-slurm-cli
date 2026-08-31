@@ -10,6 +10,17 @@ max_time_minutes: 240
 max_wait_seconds: 86400
 max_history_days: 30
 max_history_jobs: 200
+# Omit these new keys to keep arrays and dependencies disabled on upgrade.
+max_array_tasks: 1000
+max_array_concurrency: 32
+max_dependency_jobs: 16
+allowed_dependency_types:
+  - after
+  - afterany
+  - aftercorr
+  - afternotok
+  - afterok
+  - singleton
 max_log_lines: 1000
 max_log_bytes: 1048576
 max_artifact_bytes: 104857600
