@@ -4,10 +4,12 @@ import { fileURLToPath } from "node:url";
 import { AuditLogger } from "./audit/logger.js";
 import { runArtifact } from "./commands/artifact.js";
 import { runCancel } from "./commands/cancel.js";
+import { runClusterInfo } from "./commands/cluster-info.js";
 import { runList } from "./commands/list.js";
 import { runLogs } from "./commands/logs.js";
 import { runStatus } from "./commands/status.js";
 import { runSubmit } from "./commands/submit.js";
+import { runWait } from "./commands/wait.js";
 import { loadConfig } from "./config/loader.js";
 import { AgentError, ExitCode, invalid } from "./errors/errors.js";
 import { loadPolicy } from "./policy/loader.js";
@@ -22,11 +24,13 @@ const HELP = `slurm-agent ${VERSION}
 
 Usage:
   slurm-agent submit [options] SCRIPT [SCRIPT_ARGS...]
+  slurm-agent cluster-info
   slurm-agent list
   slurm-agent status JOB_ID
   slurm-agent cancel JOB_ID
   slurm-agent logs JOB_ID [--stream stdout|stderr] [--tail LINES]
   slurm-agent artifact JOB_ID --path RELATIVE_PATH
+  slurm-agent wait JOB_ID [--timeout SECONDS] [--poll-interval SECONDS]
 
 Submit options:
   -p, --partition NAME  required; policy allowlist
@@ -34,6 +38,8 @@ Submit options:
   -n, --ntasks N        default: 1
   -c, --cpus-per-task N default: 1
   --mem SIZE            default: 1G
+  --gpus N              policy-bounded total GPU count
+  --gres ALIAS          policy-defined GRES request
   -t, --time HH:MM:SS   default: 01:00:00
   -J, --job-name NAME
   --apptainer-image ALIAS
@@ -82,7 +88,7 @@ function parseArgs(argv: string[]): Parsed {
   return { command, positionals, options };
 }
 
-const submitOptions = ["partition", "nodes", "ntasks", "cpus-per-task", "mem", "time", "job-name", "apptainer-image", "venv"];
+const submitOptions = ["partition", "nodes", "ntasks", "cpus-per-task", "mem", "gpus", "gres", "time", "job-name", "apptainer-image", "venv"];
 
 function enforceSubmitShape(parsed: Parsed): void {
   const unknown = [...parsed.options.keys()].filter((key) => !submitOptions.includes(key));
@@ -102,6 +108,7 @@ function prevalidateShape(parsed: Parsed): void {
       enforceSubmitShape(parsed);
       break;
     case "list":
+    case "cluster-info":
       enforceShape(parsed, [], 0);
       break;
     case "status":
@@ -122,6 +129,12 @@ function prevalidateShape(parsed: Parsed): void {
       validateJobId(parsed.positionals[0]!);
       requiredOption(parsed.options, "path");
       break;
+    case "wait":
+      enforceShape(parsed, ["timeout", "poll-interval"], 1);
+      validateJobId(parsed.positionals[0]!);
+      if (parsed.options.has("timeout")) parsePositiveInteger(parsed.options.get("timeout")!, "--timeout");
+      if (parsed.options.has("poll-interval")) parsePositiveInteger(parsed.options.get("poll-interval")!, "--poll-interval");
+      break;
   }
 }
 
@@ -140,6 +153,8 @@ function parseSubmit(parsed: Parsed, policy: ReturnType<typeof loadPolicy>): Ret
     ntasks: parsePositiveInteger(parsed.options.get("ntasks") ?? "1", "--ntasks"),
     cpusPerTask: parsePositiveInteger(parsed.options.get("cpus-per-task") ?? "1", "--cpus-per-task"),
     memory: parsed.options.get("mem") ?? "1G",
+    gpus: parsed.options.has("gpus") ? parsePositiveInteger(parsed.options.get("gpus")!, "--gpus") : undefined,
+    gres: parsed.options.get("gres"),
     time: parsed.options.get("time") ?? "01:00:00",
     jobName: parsed.options.get("job-name"),
     apptainerImage: parsed.options.get("apptainer-image"),
@@ -170,7 +185,7 @@ export async function main(
   try {
     const parsed = parseArgs(argv);
     action = parsed.command;
-    if (!["submit", "list", "status", "cancel", "logs", "artifact"].includes(parsed.command)) {
+    if (!["submit", "cluster-info", "list", "status", "cancel", "logs", "artifact", "wait"].includes(parsed.command)) {
       throw invalid(`Unknown command: ${parsed.command}.`);
     }
     prevalidateShape(parsed);
@@ -189,6 +204,10 @@ export async function main(
       case "list":
         enforceShape(parsed, [], 0);
         response = await runList(context);
+        break;
+      case "cluster-info":
+        enforceShape(parsed, [], 0);
+        response = await runClusterInfo(context);
         break;
       case "status":
         enforceShape(parsed, [], 1);
@@ -216,6 +235,7 @@ export async function main(
           partition: parsed.options.get("partition"), nodes: parsed.options.get("nodes") ?? "1",
           ntasks: parsed.options.get("ntasks") ?? "1", cpus_per_task: parsed.options.get("cpus-per-task") ?? "1",
           memory: parsed.options.get("mem") ?? "1G", time: parsed.options.get("time") ?? "01:00:00",
+          gpus: parsed.options.get("gpus"), gres: parsed.options.get("gres"),
           apptainer_image: parsed.options.get("apptainer-image"), venv: parsed.options.get("venv"),
         };
         const submitOptions = parseSubmit(parsed, policy);
@@ -227,6 +247,23 @@ export async function main(
         const path = requiredOption(parsed.options, "path");
         auditResources = { path };
         response = await runArtifact(context, jobId, path);
+        break;
+      }
+      case "wait": {
+        jobId = validateJobId(parsed.positionals[0]!);
+        const timeoutSeconds = parsePositiveInteger(
+          parsed.options.get("timeout") ?? String(Math.min(3600, policy.maxWaitSeconds)),
+          "--timeout",
+        );
+        const pollIntervalSeconds = parsePositiveInteger(parsed.options.get("poll-interval") ?? "10", "--poll-interval");
+        if (timeoutSeconds > policy.maxWaitSeconds) {
+          throw new AgentError("RESOURCE_LIMIT_EXCEEDED", `--timeout exceeds policy maximum ${policy.maxWaitSeconds}.`, ExitCode.PolicyDenied);
+        }
+        if (pollIntervalSeconds > 300) {
+          throw invalid("--poll-interval may not exceed 300 seconds.");
+        }
+        auditResources = { timeout_seconds: timeoutSeconds, poll_interval_seconds: pollIntervalSeconds };
+        response = await runWait(context, jobId, timeoutSeconds, pollIntervalSeconds);
         break;
       }
       default:

@@ -1,5 +1,5 @@
 import { AgentError, ExitCode } from "../errors/errors.js";
-import type { JobSummary, OwnedJob } from "./types.js";
+import type { JobSummary, OwnedJob, PartitionInfo } from "./types.js";
 
 function rows(output: string): string[][] {
   return output.split(/\r?\n/).filter((line) => line.trim()).map((line) => line.split("|"));
@@ -38,4 +38,33 @@ export function parseSubmittedJobId(output: string): string {
     throw new AgentError("SLURM_SUBMIT_FAILED", "sbatch returned an invalid job ID.", ExitCode.SlurmFailure);
   }
   return match[1]!;
+}
+
+function parseNonNegativeInteger(value: string): number {
+  if (!/^\d+$/.test(value)) throw new AgentError("SLURM_QUERY_FAILED", "Unexpected sinfo output.", ExitCode.SlurmFailure);
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) throw new AgentError("SLURM_QUERY_FAILED", "Unexpected sinfo output.", ExitCode.SlurmFailure);
+  return parsed;
+}
+
+export function parseClusterInfo(output: string): PartitionInfo[] {
+  return rows(output).map((fields) => {
+    if (fields.length !== 7) throw new AgentError("SLURM_QUERY_FAILED", "Unexpected sinfo output.", ExitCode.SlurmFailure);
+    const cpuFields = fields[5]!.split("/");
+    if (cpuFields.length !== 4) throw new AgentError("SLURM_QUERY_FAILED", "Unexpected sinfo CPU summary.", ExitCode.SlurmFailure);
+    return {
+      partition: fields[0]!.replace(/\*$/, ""),
+      availability: fields[1]!,
+      time_limit: fields[2]!,
+      nodes: parseNonNegativeInteger(fields[3]!),
+      node_state: fields[4]!,
+      cpus: {
+        allocated: parseNonNegativeInteger(cpuFields[0]!),
+        idle: parseNonNegativeInteger(cpuFields[1]!),
+        other: parseNonNegativeInteger(cpuFields[2]!),
+        total: parseNonNegativeInteger(cpuFields[3]!),
+      },
+      gres: fields[6] === "(null)" ? [] : fields[6]!.split(",").filter(Boolean),
+    };
+  });
 }

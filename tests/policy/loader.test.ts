@@ -32,8 +32,34 @@ allowed_virtualenvs:
       const policy = loadPolicy(fixture.path);
       expect(policy.allowedApptainerImages.pytorch).toBe("/opt/apptainer/pytorch.sif");
       expect(policy.allowedVirtualenvs["project-a"]).toBe("/opt/venvs/project-a");
+      expect(policy.maxGpus).toBe(0);
+      expect(policy.maxWaitSeconds).toBe(86400);
     } finally { fixture.cleanup(); }
   });
+
+  it("loads GPU, wait, and GRES policy", () => {
+    const fixture = policyFile(`${base}
+max_gpus: 4
+max_wait_seconds: 7200
+allowed_gres:
+  a100x2: gpu:a100:2
+`);
+    try {
+      const policy = loadPolicy(fixture.path);
+      expect(policy.maxGpus).toBe(4);
+      expect(policy.maxWaitSeconds).toBe(7200);
+      expect(policy.allowedGres.a100x2).toBe("gpu:a100:2");
+    } finally { fixture.cleanup(); }
+  });
+
+  it.each(["gpu:a100:0", "--gres=gpu:1", "gpu:a100:1,ALL", "gpu:a100:1;id"])(
+    "rejects unsafe GRES request %j",
+    (request) => {
+      const fixture = policyFile(`${base}\nallowed_gres:\n  unsafe: ${request}\n`);
+      try { expect(() => loadPolicy(fixture.path)).toThrow(); }
+      finally { fixture.cleanup(); }
+    },
+  );
 
   it.each([
     "relative/image.sif",

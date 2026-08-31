@@ -6,8 +6,8 @@ import type { Policy } from "./types.js";
 
 const keys = [
   "allowed_partitions", "max_nodes", "max_ntasks", "max_cpus_per_task",
-  "max_memory_gb", "max_time_minutes", "max_log_lines", "max_log_bytes",
-  "max_artifact_bytes", "allowed_apptainer_images", "allowed_virtualenvs",
+  "max_memory_gb", "max_gpus", "max_time_minutes", "max_wait_seconds", "max_log_lines", "max_log_bytes",
+  "max_artifact_bytes", "allowed_apptainer_images", "allowed_virtualenvs", "allowed_gres",
   "max_script_bytes", "max_script_args", "max_script_arg_length",
   "require_apptainer_for_generated_scripts",
 ] as const;
@@ -17,8 +17,16 @@ const fixedPathPattern = /^\/[A-Za-z0-9_./+-]+$/;
 
 function positive(value: unknown, key: string, defaultValue?: number): number {
   const resolved = value ?? defaultValue;
-  if (!Number.isInteger(resolved) || (resolved as number) <= 0) {
+  if (!Number.isSafeInteger(resolved) || (resolved as number) <= 0) {
     throw new AgentError("CONFIGURATION_ERROR", `${key} must be a positive integer.`, ExitCode.General);
+  }
+  return resolved as number;
+}
+
+function nonNegative(value: unknown, key: string, defaultValue: number): number {
+  const resolved = value ?? defaultValue;
+  if (!Number.isSafeInteger(resolved) || (resolved as number) < 0) {
+    throw new AgentError("CONFIGURATION_ERROR", `${key} must be a non-negative integer.`, ExitCode.General);
   }
   return resolved as number;
 }
@@ -37,6 +45,25 @@ function fixedPathMap(value: unknown, key: string): Record<string, string> {
       throw new AgentError("CONFIGURATION_ERROR", `${key}.${alias} must be a safe absolute POSIX path.`, ExitCode.General);
     }
     result[alias] = path;
+  }
+  return result;
+}
+
+function gresMap(value: unknown, key: string): Record<string, string> {
+  if (value === undefined) return {};
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new AgentError("CONFIGURATION_ERROR", `${key} must be a mapping of aliases to GRES requests.`, ExitCode.General);
+  }
+  const result: Record<string, string> = {};
+  for (const [alias, request] of Object.entries(value as Record<string, unknown>)) {
+    if (!aliasPattern.test(alias)) {
+      throw new AgentError("CONFIGURATION_ERROR", `${key} contains an invalid alias.`, ExitCode.General);
+    }
+    const entries = typeof request === "string" ? request.split(",") : [];
+    if (entries.length === 0 || entries.some((entry) => !/^[A-Za-z0-9_.-]+:(?:[A-Za-z0-9_.-]+:)?[1-9]\d*$/.test(entry))) {
+      throw new AgentError("CONFIGURATION_ERROR", `${key}.${alias} must be a safe GRES request.`, ExitCode.General);
+    }
+    result[alias] = request as string;
   }
   return result;
 }
@@ -74,12 +101,15 @@ export function loadPolicy(path: string): Policy {
     maxNtasks: positive(data.max_ntasks, "max_ntasks"),
     maxCpusPerTask: positive(data.max_cpus_per_task, "max_cpus_per_task"),
     maxMemoryGb: positive(data.max_memory_gb, "max_memory_gb"),
+    maxGpus: nonNegative(data.max_gpus, "max_gpus", 0),
     maxTimeMinutes: positive(data.max_time_minutes, "max_time_minutes"),
+    maxWaitSeconds: positive(data.max_wait_seconds, "max_wait_seconds", 86400),
     maxLogLines: positive(data.max_log_lines, "max_log_lines", 1000),
     maxLogBytes: positive(data.max_log_bytes, "max_log_bytes", 1048576),
     maxArtifactBytes: positive(data.max_artifact_bytes, "max_artifact_bytes", 104857600),
     allowedApptainerImages: fixedPathMap(data.allowed_apptainer_images, "allowed_apptainer_images"),
     allowedVirtualenvs: fixedPathMap(data.allowed_virtualenvs, "allowed_virtualenvs"),
+    allowedGres: gresMap(data.allowed_gres, "allowed_gres"),
     maxScriptBytes: positive(data.max_script_bytes, "max_script_bytes", 65536),
     maxScriptArgs: positive(data.max_script_args, "max_script_args", 32),
     maxScriptArgLength: positive(data.max_script_arg_length, "max_script_arg_length", 1024),

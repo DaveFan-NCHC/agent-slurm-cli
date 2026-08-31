@@ -8,10 +8,12 @@ import type { Policy } from "../../src/policy/types.js";
 
 const policy: Policy = {
   allowedPartitions: ["slurm-test"], maxNodes: 2, maxNtasks: 16, maxCpusPerTask: 8,
-  maxMemoryGb: 64, maxTimeMinutes: 240, maxLogLines: 1000, maxLogBytes: 1048576,
+  maxMemoryGb: 64, maxGpus: 4, maxTimeMinutes: 240, maxWaitSeconds: 3600,
+  maxLogLines: 1000, maxLogBytes: 1048576,
   maxArtifactBytes: 104857600,
   allowedApptainerImages: { pytorch: "/opt/apptainer/pytorch.sif" },
   allowedVirtualenvs: { "project-a": "/opt/venvs/project-a" },
+  allowedGres: { a100x1: "gpu:a100:1" },
   maxScriptBytes: 65536, maxScriptArgs: 32, maxScriptArgLength: 1024,
   requireApptainerForGeneratedScripts: false,
 };
@@ -69,6 +71,19 @@ describe("resource policy", () => {
   });
   it("rejects simultaneous Apptainer and virtualenv selection", () => {
     expect(() => validateSubmit({ ...valid, apptainerImage: "pytorch", venv: "project-a" }, policy)).toThrow();
+  });
+  it("accepts bounded GPUs and resolves a GRES alias", () => {
+    expect(validateSubmit({ ...valid, gpus: 2 }, policy).gpus).toBe(2);
+    expect(validateSubmit({ ...valid, gres: "a100x1" }, policy).gresValue).toBe("gpu:a100:1");
+  });
+  it("rejects excess GPUs, unknown GRES aliases, and simultaneous GPU selectors", () => {
+    expect(() => validateSubmit({ ...valid, gpus: 5 }, policy)).toThrowError(
+      expect.objectContaining({ code: "RESOURCE_LIMIT_EXCEEDED" }),
+    );
+    expect(() => validateSubmit({ ...valid, gres: "unknown" }, policy)).toThrowError(
+      expect.objectContaining({ code: "GRES_ALIAS_NOT_ALLOWED" }),
+    );
+    expect(() => validateSubmit({ ...valid, gpus: 1, gres: "a100x1" }, policy)).toThrow();
   });
   it("can require an approved Apptainer runtime", () => {
     expect(() => validateSubmit(valid, { ...policy, requireApptainerForGeneratedScripts: true }))

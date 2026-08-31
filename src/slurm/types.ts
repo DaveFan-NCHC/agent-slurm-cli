@@ -24,3 +24,24 @@ export interface ArtifactResult {
   local_path: string;
   bytes: number;
 }
+
+export interface PartitionInfo {
+  partition: string;
+  availability: string;
+  time_limit: string;
+  node_state: string;
+  nodes: number;
+  cpus: {
+    allocated: number;
+    idle: number;
+    other: number;
+    total: number;
+  };
+  gres: string[];
+}
+
+export interface WaitResult {
+  job: OwnedJob;
+  terminal: boolean;
+  timed_out: boolean;
+}

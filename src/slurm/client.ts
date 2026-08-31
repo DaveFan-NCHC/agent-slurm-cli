@@ -5,8 +5,8 @@ import type { PreparedScript } from "../policy/script.js";
 import type { NormalizedSubmit } from "../policy/validator.js";
 import type { Policy } from "../policy/types.js";
 import type { RemoteExecutor, RemoteResult, SafeCommand } from "../transport/types.js";
-import { parseAccountingJob, parseQueueJob, parseQueueList, parseSubmittedJobId } from "./parser.js";
-import type { ArtifactResult, JobSummary, LogResult, OwnedJob } from "./types.js";
+import { parseAccountingJob, parseClusterInfo, parseQueueJob, parseQueueList, parseSubmittedJobId } from "./parser.js";
+import type { ArtifactResult, JobSummary, LogResult, OwnedJob, PartitionInfo, WaitResult } from "./types.js";
 import { TRUSTED_RUNNER } from "./runner.js";
 
 function failure(result: RemoteResult, code: "SLURM_SUBMIT_FAILED" | "SLURM_QUERY_FAILED" | "SLURM_CANCEL_FAILED" | "SLURM_LOG_FAILED", message: string): never {
@@ -66,6 +66,23 @@ export class SlurmClient {
     const result = await this.run({ executable: "squeue", args: ["--noheader", "--user", this.user, "--format=%i|%j|%P|%T|%M"] });
     if (result.exitCode !== 0) failure(result, "SLURM_QUERY_FAILED", "Unable to list Slurm jobs.");
     return parseQueueList(result.stdout);
+  }
+
+  async clusterInfo(): Promise<PartitionInfo[]> {
+    const result = await this.run({
+      executable: "sinfo",
+      args: [
+        "--noheader",
+        `--partition=${this.policy.allowedPartitions.join(",")}`,
+        "--format=%P|%a|%l|%D|%t|%C|%G",
+      ],
+    });
+    if (result.exitCode !== 0) failure(result, "SLURM_QUERY_FAILED", "Unable to query Slurm cluster information.");
+    const partitions = parseClusterInfo(result.stdout);
+    if (partitions.some((partition) => !this.policy.allowedPartitions.includes(partition.partition))) {
+      throw new AgentError("SLURM_QUERY_FAILED", "Slurm returned a partition outside the configured policy.", ExitCode.SlurmFailure);
+    }
+    return partitions;
   }
 
   async getOwnedJob(jobId: string): Promise<OwnedJob> {
@@ -153,6 +170,8 @@ export class SlurmClient {
       `--export=${exportedEnvironment.join(",")}`,
     ];
     if (options.jobName) args.push(`--job-name=${options.jobName}`);
+    if (options.gpus !== undefined) args.push(`--gpus=${options.gpus}`);
+    if (options.gresValue !== undefined) args.push(`--gres=${options.gresValue}`);
     args.push("--", runnerPath, ...options.scriptArgs);
     const result = await this.run({ executable: "sbatch", args });
     if (result.exitCode !== 0) failure(result, "SLURM_SUBMIT_FAILED", "Slurm rejected the submission.");
@@ -163,6 +182,23 @@ export class SlurmClient {
     await this.getOwnedJob(jobId);
     const result = await this.run({ executable: "scancel", args: [jobId] });
     if (result.exitCode !== 0) failure(result, "SLURM_CANCEL_FAILED", `Unable to cancel job ${jobId}.`);
+  }
+
+  async wait(jobId: string, timeoutSeconds: number, pollIntervalSeconds: number): Promise<WaitResult> {
+    const deadline = Date.now() + timeoutSeconds * 1000;
+    let job = await this.getOwnedJob(jobId);
+    while (!isTerminalState(job.state)) {
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) return { job, terminal: false, timed_out: true };
+      await new Promise<void>((resolve) => setTimeout(resolve, Math.min(pollIntervalSeconds * 1000, remainingMs)));
+      try {
+        job = await this.getOwnedJob(jobId);
+      } catch (cause) {
+        // Slurm accounting can briefly lag after a job leaves squeue.
+        if (!(cause instanceof AgentError) || cause.code !== "JOB_NOT_FOUND") throw cause;
+      }
+    }
+    return { job, terminal: true, timed_out: false };
   }
 
   async logs(jobId: string, stream: "stdout" | "stderr", lines: number): Promise<LogResult> {
@@ -203,4 +239,13 @@ export class SlurmClient {
     const downloaded = await this.executor.downloadArtifact({ remotePath, localPath, maxBytes: this.policy.maxArtifactBytes });
     return { job_id: jobId, remote_path: remotePath, local_path: localPath, bytes: downloaded.bytes };
   }
+}
+
+const TERMINAL_STATES = new Set([
+  "BOOT_FAIL", "CANCELLED", "COMPLETED", "DEADLINE", "FAILED", "NODE_FAIL",
+  "OUT_OF_MEMORY", "PREEMPTED", "REVOKED", "TIMEOUT",
+]);
+
+function isTerminalState(state: string): boolean {
+  return TERMINAL_STATES.has(state.split(/[ +]/, 1)[0]!);
 }

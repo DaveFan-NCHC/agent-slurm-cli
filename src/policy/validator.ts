@@ -8,6 +8,8 @@ export interface SubmitOptions {
   ntasks: number;
   cpusPerTask: number;
   memory: string;
+  gpus?: number;
+  gres?: string;
   time: string;
   jobName?: string;
   apptainerImage?: string;
@@ -20,6 +22,7 @@ export interface NormalizedSubmit extends SubmitOptions {
   timeMinutes: number;
   apptainerImagePath?: string;
   venvPath?: string;
+  gresValue?: string;
 }
 
 const runtimeAliasPattern = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
@@ -30,6 +33,14 @@ function resolveRuntimeAlias(alias: string | undefined, allowed: Record<string, 
   const path = allowed[alias];
   if (!path) throw policyDenied("RUNTIME_ALIAS_NOT_ALLOWED", `${label} alias ${alias} is not permitted.`);
   return path;
+}
+
+function resolveGresAlias(alias: string | undefined, allowed: Record<string, string>): string | undefined {
+  if (alias === undefined) return undefined;
+  if (!runtimeAliasPattern.test(alias)) throw invalid("GRES must be a safe logical alias.");
+  const value = allowed[alias];
+  if (!value) throw policyDenied("GRES_ALIAS_NOT_ALLOWED", `GRES alias ${alias} is not permitted.`);
+  return value;
 }
 
 export function parsePositiveInteger(text: string, option: string): number {
@@ -84,6 +95,16 @@ export function validateSubmit(options: SubmitOptions, policy: Policy): Normaliz
   if (options.apptainerImage && options.venv) {
     throw invalid("--apptainer-image and --venv are mutually exclusive.");
   }
+  if (options.gpus !== undefined && options.gres !== undefined) {
+    throw invalid("--gpus and --gres are mutually exclusive.");
+  }
+  if (options.gpus !== undefined) {
+    if (!Number.isInteger(options.gpus) || options.gpus < 1) throw invalid("--gpus must be a positive integer.");
+    if (options.gpus > policy.maxGpus) {
+      throw policyDenied("RESOURCE_LIMIT_EXCEEDED", `gpus exceeds policy maximum ${policy.maxGpus}.`);
+    }
+  }
+  const gresValue = resolveGresAlias(options.gres, policy.allowedGres);
   const apptainerImagePath = resolveRuntimeAlias(options.apptainerImage, policy.allowedApptainerImages, "Apptainer image");
   const venvPath = resolveRuntimeAlias(options.venv, policy.allowedVirtualenvs, "Virtual environment");
   if (policy.requireApptainerForGeneratedScripts && !apptainerImagePath) {
@@ -116,7 +137,7 @@ export function validateSubmit(options: SubmitOptions, policy: Policy): Normaliz
   if (timeMinutes > policy.maxTimeMinutes) {
     throw policyDenied("TIME_LIMIT_EXCEEDED", `time exceeds policy maximum ${policy.maxTimeMinutes} minutes.`);
   }
-  return { ...options, memoryGb, timeMinutes, apptainerImagePath, venvPath };
+  return { ...options, memoryGb, timeMinutes, apptainerImagePath, venvPath, gresValue };
 }
 
 export function validateJobId(value: string): string {

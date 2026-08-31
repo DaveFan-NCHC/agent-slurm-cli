@@ -6,6 +6,7 @@ export async function runSubmit(context: CommandContext, options: NormalizedSubm
   const resources = {
     partition: options.partition, nodes: options.nodes, ntasks: options.ntasks,
     cpus_per_task: options.cpusPerTask, memory: options.memory, time: options.time,
+    gpus: options.gpus, gres: options.gres,
     apptainer_image: options.apptainerImage, venv: options.venv,
     script_sha256: script.sha256,
   };

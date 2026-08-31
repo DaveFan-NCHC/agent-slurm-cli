@@ -6,11 +6,13 @@ The public interface contains only these Slurm lifecycle operations:
 
 ```text
 slurm-agent submit
+slurm-agent cluster-info
 slurm-agent list
 slurm-agent status JOB_ID
 slurm-agent cancel JOB_ID
 slurm-agent logs JOB_ID
 slurm-agent artifact JOB_ID --path RELATIVE_PATH
+slurm-agent wait JOB_ID
 ```
 
 There is deliberately no `exec`, `ssh`, `shell`, arbitrary path, generic file-transfer, or generic remote-command operation. Successful and failed operational commands write one JSON object to stdout. Audit events go to stderr or a protected file.
@@ -56,22 +58,26 @@ export SLURM_AUDIT_LOG=/var/log/slurm-agent/audit.jsonl
 
 `SLURM_SSH_KNOWN_HOSTS` must contain a plain hostname entry (or `[host]:port` for a non-default port). Hashed hostnames are not parsed. As an alternative, set `SLURM_SSH_HOST_FINGERPRINT` to a pinned `SHA256:...` host-key fingerprint. One of these verification methods is mandatory; insecure host-key checking is not available. The private key is read only from `SLURM_SSH_KEY_PATH`.
 
-Copy [examples/config.yaml](examples/config.yaml) to the protected `SLURM_POLICY_PATH` location and adjust its partition, resource limits, and optional runtime aliases. Unknown policy keys fail closed.
+Copy [examples/slurm-agent-policy.example.yaml](examples/slurm-agent-policy.example.yaml) to the protected `SLURM_POLICY_PATH` location and adjust its partition, resource limits, and optional aliases. Unknown policy keys fail closed.
 
-Runtime aliases map agent-visible logical names to operator-controlled absolute paths:
+Policy aliases map agent-visible logical names to operator-controlled runtime paths or GRES requests:
 
 ```yaml
 allowed_apptainer_images:
   pytorch: /opt/apptainer/pytorch.sif
 allowed_virtualenvs:
   project-a: /home/agent/venvs/project-a
+max_gpus: 4
+allowed_gres:
+  a100x1: gpu:a100:1
+max_wait_seconds: 86400
 max_script_bytes: 65536
 max_script_args: 32
 max_script_arg_length: 1024
 require_apptainer_for_generated_scripts: true
 ```
 
-The alias is accepted from the CLI; a raw image or virtualenv path is not.
+Aliases are accepted from the CLI; raw image, virtualenv, and GRES values are not. `max_gpus: 0` disables direct `--gpus` requests.
 
 ### Cluster path visibility
 
@@ -101,6 +107,7 @@ slurm-agent submit \
   -n 4 \
   -c 2 \
   --mem 8G \
+  --gpus 1 \
   -t 01:00:00 \
   -J naca \
   --apptainer-image pytorch \
@@ -118,6 +125,15 @@ slurm-agent submit -p slurm-test --apptainer-image pytorch jobs/train.sh
 slurm-agent submit -p slurm-test --venv project-a jobs/train.sh
 ```
 
+GPU resources can be requested either by a policy-bounded count or by an operator-defined GRES alias. The two forms are mutually exclusive:
+
+```bash
+slurm-agent submit -p slurm-test --gpus 1 --apptainer-image pytorch jobs/train.sh
+slurm-agent submit -p slurm-test --gres a100x1 --apptainer-image pytorch jobs/train.sh
+```
+
+`--gres` never accepts a raw Slurm GRES expression. The CLI maps the alias through `allowed_gres` before constructing `sbatch`.
+
 With the default secure policy, agent-generated scripts require an approved Apptainer alias. The CLI-generated runner forces execution through `--containall` and `--cleanenv`, mounts the remote workspace read-only, and mounts only that job's controlled artifact directory read-write. The agent script does not invoke Apptainer itself:
 
 ```bash
@@ -131,12 +147,16 @@ The script must be valid UTF-8, begin with a shebang, fit the policy size limit,
 Other operations:
 
 ```bash
+slurm-agent cluster-info
 slurm-agent list
 slurm-agent status 12345
+slurm-agent wait 12345 --timeout 3600 --poll-interval 10
 slurm-agent logs 12345 --stream stdout --tail 200
 slurm-agent artifact 12345 --path results/model.bin
 slurm-agent cancel 12345
 ```
+
+`cluster-info` returns partition availability, time limit, node state, CPU counts, and configured GRES only for `allowed_partitions`. `wait` polls the owned job until it reaches a terminal state. If its bounded timeout expires, it returns `ok: true`, `terminal: false`, `timed_out: true`, and the last observed job state. `terminal: true` means the job has stopped, not necessarily that it succeeded; callers must inspect `job.state` and `job.exit_code`.
 
 Submissions always set output files to `.slurm-agent/logs/%j.out` and `%j.err` under the real remote workspace. `logs` can read only those generated names, limits lines and bytes, and verifies the resolved path is still inside the workspace. Consequently, `logs` does not read arbitrary output paths from jobs submitted outside this CLI.
 
@@ -193,7 +213,7 @@ Errors retain a stable machine-readable code, for example:
 - Script and log paths are checked with remote `realpath`, preventing traversal and symlink escape.
 - Artifact transfer is an internal, single-file SFTP stream after remote containment checks; it is not an SFTP browser. The destination is derived from trusted configuration and the job ID, and is created without overwrite.
 - Audit records never contain private keys, credentials, command stderr, or environment values.
-- The remote host needs GNU-compatible `realpath`, `test`, `mkdir`, and `tail`, plus `sbatch`, `squeue`, `sacct`, and `scancel` in its non-interactive PATH.
+- The remote host needs GNU-compatible `realpath`, `test`, `mkdir`, and `tail`, plus `sbatch`, `squeue`, `sacct`, `scancel`, and `sinfo` in its non-interactive PATH.
 - Cluster-wide enforcement still belongs in Slurm configuration such as account/QOS limits and `job_submit` policy; the CLI policy is an additional capability boundary, not a replacement for scheduler controls.
 - Completed-job lookup depends on Slurm accounting (`sacct`) retention and permissions. If no allocation record is visible, the CLI reports `JOB_NOT_FOUND`.
 - SSH certificates, encrypted private keys requiring an interactive passphrase, wildcard/hashed `known_hosts` entries, job arrays, and federation IDs are not supported in this first release.

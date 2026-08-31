@@ -5,7 +5,9 @@ max_nodes: 2
 max_ntasks: 16
 max_cpus_per_task: 8
 max_memory_gb: 64
+max_gpus: 4
 max_time_minutes: 240
+max_wait_seconds: 86400
 max_log_lines: 1000
 max_log_bytes: 1048576
 max_artifact_bytes: 104857600
@@ -16,6 +18,9 @@ allowed_apptainer_images:
   pytorch: /opt/apptainer/pytorch.sif
 allowed_virtualenvs:
   project-a: /home/agent/venvs/project-a
+allowed_gres:
+  a100x1: gpu:a100:1
+  a100x2: gpu:a100:2
 max_script_bytes: 65536
 max_script_args: 32
 max_script_arg_length: 1024

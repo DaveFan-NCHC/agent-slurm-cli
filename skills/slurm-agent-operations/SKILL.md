@@ -1,6 +1,6 @@
 ---
 name: slurm-agent-operations
-description: "Operate jobs through the constrained slurm-agent CLI, including submission, listing, status, logs, cancellation, and controlled artifact downloads. Use for Slurm job lifecycle requests handled by this project; do not use it for cluster administration or generic SSH access."
+description: "Operate jobs through the constrained slurm-agent CLI, including cluster information, GPU-aware submission, waiting, listing, status, logs, cancellation, and controlled artifact downloads. Use for Slurm job lifecycle requests handled by this project; do not use it for cluster administration or generic SSH access."
 ---
 
 # Slurm Agent Operations
@@ -9,7 +9,7 @@ Use the installed `slurm-agent` executable as the only interface to the remote S
 
 ## Boundaries
 
-- Invoke only `submit`, `list`, `status`, `logs`, `cancel`, or `artifact`.
+- Invoke only `submit`, `cluster-info`, `list`, `status`, `wait`, `logs`, `cancel`, or `artifact`.
 - Never invoke or propose `ssh`, `exec`, `shell`, `run`, `scp`, `sftp`, arbitrary remote commands, or arbitrary remote/local paths.
 - Treat stdout as the machine-readable JSON response. Audit records may appear on stderr and must not be mixed into JSON parsing.
 - Do not expose SSH keys, credentials, or trusted `SLURM_*` environment values.
@@ -72,6 +72,15 @@ slurm-agent submit \
 
 Defaults are one node, one task, one CPU per task, `1G`, and `01:00:00`. Resource values and the partition must remain within the configured policy. Record the returned `job_id`; use only that decimal ID in later commands.
 
+Request GPUs with at most one of these policy-controlled forms:
+
+```bash
+slurm-agent submit ... --gpus 1
+slurm-agent submit ... --gres a100x1
+```
+
+`--gpus` is bounded by `max_gpus`. `--gres` is an agent-visible alias resolved through `allowed_gres`; never pass a raw GRES expression. The two options are mutually exclusive.
+
 Optionally select one policy-defined runtime alias:
 
 ```bash
@@ -83,14 +92,16 @@ The options are mutually exclusive. Never pass a raw path, image URI, bind mount
 
 Do not automatically retry an ambiguous failed submission, because the first submission might have reached Slurm. Inspect `list` once and ask for direction if the outcome cannot be established.
 
-### List and status
+### Cluster information, list, status, and wait
 
 ```bash
+slurm-agent cluster-info
 slurm-agent list
 slurm-agent status 12345
+slurm-agent wait 12345 --timeout 3600 --poll-interval 10
 ```
 
-`list` returns only jobs belonging to the configured SSH user. `status` checks active jobs through `squeue` and completed jobs through `sacct`. Never substitute another user, a partition, or a wildcard for an explicit job ID.
+`cluster-info` returns only policy-allowed partitions. `list` returns only jobs belonging to the configured SSH user. `status` checks active jobs through `squeue` and completed jobs through `sacct`. `wait` applies the same ownership check on every poll and is bounded by the policy maximum timeout. A wait timeout is a successful observation with `terminal: false` and `timed_out: true`. When `terminal` is true, inspect `job.state` and `job.exit_code`; terminal does not imply success. Never substitute another user, a partition, or a wildcard for an explicit job ID.
 
 ### Logs
 
@@ -150,4 +161,4 @@ Success has `ok: true`; failure has `ok: false` and an `error.code` plus `error.
 7 ownership denied
 ```
 
-For `JOB_NOT_OWNED_BY_USER`, `PATH_NOT_ALLOWED`, `PARTITION_NOT_ALLOWED`, `RUNTIME_ALIAS_NOT_ALLOWED`, `RESOURCE_LIMIT_EXCEEDED`, `TIME_LIMIT_EXCEEDED`, or `ARTIFACT_TOO_LARGE`, stop rather than attempting a workaround. For `ARTIFACT_ALREADY_EXISTS`, preserve the existing file. For transient query failures, a bounded retry is reasonable; do not blindly retry `submit` or `cancel`.
+For `JOB_NOT_OWNED_BY_USER`, `PATH_NOT_ALLOWED`, `PARTITION_NOT_ALLOWED`, `RUNTIME_ALIAS_NOT_ALLOWED`, `GRES_ALIAS_NOT_ALLOWED`, `RESOURCE_LIMIT_EXCEEDED`, `TIME_LIMIT_EXCEEDED`, or `ARTIFACT_TOO_LARGE`, stop rather than attempting a workaround. For `ARTIFACT_ALREADY_EXISTS`, preserve the existing file. For transient query failures, a bounded retry is reasonable; do not blindly retry `submit` or `cancel`.

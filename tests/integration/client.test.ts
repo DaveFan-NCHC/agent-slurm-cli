@@ -5,10 +5,12 @@ import type { RemoteExecutor, RemoteResult, SafeCommand } from "../../src/transp
 
 const policy: Policy = {
   allowedPartitions: ["slurm-test"], maxNodes: 2, maxNtasks: 16, maxCpusPerTask: 8,
-  maxMemoryGb: 64, maxTimeMinutes: 240, maxLogLines: 1000, maxLogBytes: 1024,
+  maxMemoryGb: 64, maxGpus: 4, maxTimeMinutes: 240, maxWaitSeconds: 3600,
+  maxLogLines: 1000, maxLogBytes: 1024,
   maxArtifactBytes: 4096,
   allowedApptainerImages: { pytorch: "/opt/apptainer/pytorch.sif" },
   allowedVirtualenvs: { "project-a": "/opt/venvs/project-a" },
+  allowedGres: { a100x1: "gpu:a100:1" },
   maxScriptBytes: 65536, maxScriptArgs: 32, maxScriptArgLength: 1024,
   requireApptainerForGeneratedScripts: false,
 };
@@ -57,6 +59,75 @@ describe("Slurm client security boundaries", () => {
     expect(submit.args.slice(-2)).toEqual(["--epochs", "20"]);
     expect(remote.uploads).toHaveLength(2);
     expect(remote.uploads[0]?.remotePath).toBe("/work/.slurm-agent/submissions/staged/payload");
+  });
+
+  it("queries only policy-allowed partitions for cluster information", async () => {
+    const remote = new MockExecutor([
+      ok("slurm-test*|up|04:00:00|2|idle|0/32/0/32|gpu:a100:4\n"),
+    ]);
+    const client = new SlurmClient(remote, "alice", "/work", policy);
+    await expect(client.clusterInfo()).resolves.toEqual([{
+      partition: "slurm-test", availability: "up", time_limit: "04:00:00", nodes: 2,
+      node_state: "idle", cpus: { allocated: 0, idle: 32, other: 0, total: 32 },
+      gres: ["gpu:a100:4"],
+    }]);
+    expect(remote.commands[0]).toEqual({
+      executable: "sinfo",
+      args: ["--noheader", "--partition=slurm-test", "--format=%P|%a|%l|%D|%t|%C|%G"],
+    });
+  });
+
+  it("fails closed if sinfo returns a partition outside policy", async () => {
+    const remote = new MockExecutor([
+      ok("admin|up|04:00:00|1|idle|0/16/0/16|(null)\n"),
+    ]);
+    const client = new SlurmClient(remote, "alice", "/work", policy);
+    await expect(client.clusterInfo()).rejects.toMatchObject({ code: "SLURM_QUERY_FAILED" });
+  });
+
+  it("passes validated GPU and GRES requests to sbatch", async () => {
+    const makeRemote = () => new MockExecutor([
+      ok("/work\n"), ok(), ok("/work/.slurm-agent/logs\n"),
+      ok("/work/.slurm-agent/artifacts\n"), ok("/work/.slurm-agent/submissions/staged\n"), ok("12345\n"),
+    ]);
+    const gpuRemote = makeRemote();
+    const client = new SlurmClient(gpuRemote, "alice", "/work", policy);
+    await client.submit({
+      script: "jobs/test.sh", partition: "slurm-test", nodes: 1, ntasks: 1, cpusPerTask: 1,
+      memory: "1G", time: "00:10:00", memoryGb: 1, timeMinutes: 10, gpus: 2, scriptArgs: [],
+    }, prepared);
+    expect(gpuRemote.commands.at(-1)?.args).toContain("--gpus=2");
+
+    const gresRemote = makeRemote();
+    const gresClient = new SlurmClient(gresRemote, "alice", "/work", policy);
+    await gresClient.submit({
+      script: "jobs/test.sh", partition: "slurm-test", nodes: 1, ntasks: 1, cpusPerTask: 1,
+      memory: "1G", time: "00:10:00", memoryGb: 1, timeMinutes: 10,
+      gres: "a100x1", gresValue: "gpu:a100:1", scriptArgs: [],
+    }, prepared);
+    expect(gresRemote.commands.at(-1)?.args).toContain("--gres=gpu:a100:1");
+    expect(gresRemote.commands.at(-1)?.args).not.toContain("--gres=a100x1");
+  });
+
+  it("waits until an owned job reaches a terminal state", async () => {
+    const remote = new MockExecutor([
+      ok("44|alice|job|p|RUNNING|00:01\n"),
+      ok(""), ok(""),
+      ok(""),
+      ok("44|alice|job|p|COMPLETED|00:01|0:0\n"),
+    ]);
+    const client = new SlurmClient(remote, "alice", "/work", policy);
+    await expect(client.wait("44", 1, 0)).resolves.toMatchObject({
+      terminal: true, timed_out: false, job: { job_id: "44", state: "COMPLETED" },
+    });
+  });
+
+  it("returns the last observed state when wait times out", async () => {
+    const remote = new MockExecutor([ok("44|alice|job|p|RUNNING|00:01\n")]);
+    const client = new SlurmClient(remote, "alice", "/work", policy);
+    await expect(client.wait("44", 0, 0)).resolves.toMatchObject({
+      terminal: false, timed_out: true, job: { job_id: "44", state: "RUNNING" },
+    });
   });
 
   it("exports a policy-resolved Apptainer image", async () => {
