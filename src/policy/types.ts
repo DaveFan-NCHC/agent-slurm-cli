@@ -7,6 +7,8 @@ export interface Policy {
   maxGpus: number;
   maxTimeMinutes: number;
   maxWaitSeconds: number;
+  maxHistoryDays: number;
+  maxHistoryJobs: number;
   maxLogLines: number;
   maxLogBytes: number;
   maxArtifactBytes: number;

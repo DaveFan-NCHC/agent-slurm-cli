@@ -8,7 +8,9 @@ The public interface contains only these Slurm lifecycle operations:
 slurm-agent submit
 slurm-agent cluster-info
 slurm-agent list
+slurm-agent history
 slurm-agent status JOB_ID
+slurm-agent usage JOB_ID
 slurm-agent cancel JOB_ID
 slurm-agent logs JOB_ID
 slurm-agent artifact JOB_ID --path RELATIVE_PATH
@@ -32,7 +34,7 @@ slurm-agent --version
 For production, publish and install a pinned version during image/host bootstrap:
 
 ```bash
-npm install -g @nchc/slurm-agent@0.3.0
+npm install -g @nchc/slurm-agent@0.4.0
 command -v slurm-agent
 ```
 
@@ -71,6 +73,8 @@ max_gpus: 4
 allowed_gres:
   a100x1: gpu:a100:1
 max_wait_seconds: 86400
+max_history_days: 30
+max_history_jobs: 200
 max_script_bytes: 65536
 max_script_args: 32
 max_script_arg_length: 1024
@@ -149,7 +153,9 @@ Other operations:
 ```bash
 slurm-agent cluster-info
 slurm-agent list
+slurm-agent history --days 7 --state COMPLETED --limit 50
 slurm-agent status 12345
+slurm-agent usage 12345
 slurm-agent wait 12345 --timeout 3600 --poll-interval 10
 slurm-agent logs 12345 --stream stdout --tail 200
 slurm-agent artifact 12345 --path results/model.bin
@@ -157,6 +163,10 @@ slurm-agent cancel 12345
 ```
 
 `cluster-info` returns partition availability, time limit, node state, CPU counts, and configured GRES only for `allowed_partitions`. `wait` polls the owned job until it reaches a terminal state. If its bounded timeout expires, it returns `ok: true`, `terminal: false`, `timed_out: true`, and the last observed job state. `terminal: true` means the job has stopped, not necessarily that it succeeded; callers must inspect `job.state` and `job.exit_code`.
+
+`history` uses one bounded accounting query and returns allocation records only for the configured SSH user. `--days` and `--limit` are capped by `max_history_days` and `max_history_jobs`; `--state` accepts a fixed set of Slurm job states.
+
+`usage` verifies ownership and returns allocation/step accounting including CPU time, peak RSS/VM size, disk I/O, requested and allocated TRES, and exit status. CPU efficiency is `TotalCPU / (ElapsedRaw × AllocCPUS)`. Memory efficiency compares the largest reported step `MaxRSS` with the requested memory after applying Slurm's per-CPU (`c`) or per-node (`n`) scope; it is an estimate for multi-task jobs. An efficiency field is omitted when its inputs are unavailable. For non-pending active jobs, `live_steps` comes from `sstat`; `live_available: false` means live metrics were unavailable, while accounting data remains valid.
 
 Submissions always set output files to `.slurm-agent/logs/%j.out` and `%j.err` under the real remote workspace. `logs` can read only those generated names, limits lines and bytes, and verifies the resolved path is still inside the workspace. Consequently, `logs` does not read arbitrary output paths from jobs submitted outside this CLI.
 
@@ -209,13 +219,14 @@ Errors retain a stable machine-readable code, for example:
 - Agent scripts come only from `SLURM_LOCAL_JOB_WORKSPACE`; symlinks, traversal, oversized files, invalid UTF-8, missing shebangs, and embedded `#SBATCH` directives are rejected. The exact bytes are hashed before upload.
 - Upload destinations are random, CLI-generated directories below `.slurm-agent/submissions`; callers cannot select a remote destination. Payload and trusted runner uploads use temporary files followed by atomic rename.
 - The batch environment exports only controlled `SLURM_AGENT_*` values, not the complete SSH process environment.
-- `cancel`, `status`, `logs`, and `artifact` confirm that Slurm reports the configured user as owner.
+- `cancel`, `status`, `usage`, `wait`, `logs`, and `artifact` confirm that Slurm reports the configured user as owner. `history` fixes its query to that user and rejects unexpected cross-user rows.
 - Script and log paths are checked with remote `realpath`, preventing traversal and symlink escape.
 - Artifact transfer is an internal, single-file SFTP stream after remote containment checks; it is not an SFTP browser. The destination is derived from trusted configuration and the job ID, and is created without overwrite.
 - Audit records never contain private keys, credentials, command stderr, or environment values.
-- The remote host needs GNU-compatible `realpath`, `test`, `mkdir`, and `tail`, plus `sbatch`, `squeue`, `sacct`, `scancel`, and `sinfo` in its non-interactive PATH.
+- The remote host needs GNU-compatible `realpath`, `test`, `mkdir`, and `tail`, plus `sbatch`, `squeue`, `sacct`, `scancel`, `sinfo`, and `sstat` in its non-interactive PATH.
 - Cluster-wide enforcement still belongs in Slurm configuration such as account/QOS limits and `job_submit` policy; the CLI policy is an additional capability boundary, not a replacement for scheduler controls.
 - Completed-job lookup depends on Slurm accounting (`sacct`) retention and permissions. If no allocation record is visible, the CLI reports `JOB_NOT_FOUND`.
+- Live resource metrics depend on Slurm's `jobacct_gather` support. If `sstat` is unavailable for a running job, `usage` returns accounting data with `live_available: false`.
 - SSH certificates, encrypted private keys requiring an interactive passphrase, wildcard/hashed `known_hosts` entries, job arrays, and federation IDs are not supported in this first release.
 - Submitted staging directories are retained for reproducibility in this release; production deployments should apply an operator-controlled retention policy.
 

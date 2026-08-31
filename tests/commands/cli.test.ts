@@ -69,6 +69,9 @@ describe("CLI boundary", () => {
     ["artifact", "1", "--path", "../../etc/passwd", "--overwrite", "true"],
     ["cluster-info", "--partition", "gpu"],
     ["wait", "1", "--poll-interval", "0"],
+    ["history", "--days", "0"],
+    ["history", "--state", "NOT_A_STATE"],
+    ["usage", "1", "--user", "all"],
   ])("rejects unexpected command options before loading credentials", async (...argv) => {
     const stdout = new Sink();
     const code = await main(argv, {}, stdout);
@@ -92,6 +95,8 @@ max_memory_gb: 8
 max_gpus: 2
 max_time_minutes: 60
 max_wait_seconds: 60
+max_history_days: 30
+max_history_jobs: 100
 allowed_gres:
   gpu1: gpu:1
 require_apptainer_for_generated_scripts: false
@@ -133,6 +138,8 @@ max_memory_gb: 8
 max_gpus: 2
 max_time_minutes: 60
 max_wait_seconds: 60
+max_history_days: 30
+max_history_jobs: 100
 require_apptainer_for_generated_scripts: false
 `);
       const env = {
@@ -148,6 +155,35 @@ require_apptainer_for_generated_scripts: false
       expect(await main(["cluster-info"], env, clusterOutput, new Sink() as never, () => clusterRemote)).toBe(0);
       expect(JSON.parse(clusterOutput.value)).toMatchObject({
         ok: true, partitions: [{ partition: "p", nodes: 1, gres: [] }],
+      });
+
+      const historyRow = [
+        "43", "alice", "old", "p", "COMPLETED", "00:01:00",
+        "2026-08-30T10:00:00", "2026-08-30T10:01:00", "0:0", "1", "1", "1Gn", "cpu=1,mem=1G,node=1",
+      ].join("|");
+      const historyRemote = new QueryExecutor([{ stdout: `${historyRow}\n`, stderr: "", exitCode: 0 }]);
+      const historyOutput = new Sink();
+      expect(await main(
+        ["history", "--days", "7", "--state", "completed", "--limit", "10"],
+        env, historyOutput, new Sink() as never, () => historyRemote,
+      )).toBe(0);
+      expect(JSON.parse(historyOutput.value)).toMatchObject({
+        ok: true, query: { days: 7, state: "COMPLETED", limit: 10 }, jobs: [{ job_id: "43" }],
+      });
+
+      const usageRow = [
+        "44", "alice", "job", "p", "COMPLETED", "00:01:00", "60", "1", "1", "1Gn",
+        "cpu=1,mem=1G,node=1", "cpu=1,mem=1G,node=1", "00:00:30", "512M", "1G", "0", "0", "0:0",
+      ].join("|");
+      const usageRemote = new QueryExecutor([
+        { stdout: "", stderr: "", exitCode: 0 },
+        { stdout: "44|alice|job|p|COMPLETED|00:01:00|0:0\n", stderr: "", exitCode: 0 },
+        { stdout: `${usageRow}\n`, stderr: "", exitCode: 0 },
+      ]);
+      const usageOutput = new Sink();
+      expect(await main(["usage", "44"], env, usageOutput, new Sink() as never, () => usageRemote)).toBe(0);
+      expect(JSON.parse(usageOutput.value)).toMatchObject({
+        ok: true, usage: { job_id: "44", cpu_efficiency_percent: 50, memory_efficiency_percent: 50 },
       });
 
       const waitRemote = new QueryExecutor([

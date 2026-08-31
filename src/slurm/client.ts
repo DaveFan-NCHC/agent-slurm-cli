@@ -5,8 +5,11 @@ import type { PreparedScript } from "../policy/script.js";
 import type { NormalizedSubmit } from "../policy/validator.js";
 import type { Policy } from "../policy/types.js";
 import type { RemoteExecutor, RemoteResult, SafeCommand } from "../transport/types.js";
-import { parseAccountingJob, parseClusterInfo, parseQueueJob, parseQueueList, parseSubmittedJobId } from "./parser.js";
-import type { ArtifactResult, JobSummary, LogResult, OwnedJob, PartitionInfo, WaitResult } from "./types.js";
+import {
+  parseAccountingJob, parseClusterInfo, parseHistory, parseJobUsage, parseLiveUsage,
+  parseQueueJob, parseQueueList, parseSubmittedJobId,
+} from "./parser.js";
+import type { ArtifactResult, HistoryJob, JobSummary, JobUsage, LogResult, OwnedJob, PartitionInfo, WaitResult } from "./types.js";
 import { TRUSTED_RUNNER } from "./runner.js";
 
 function failure(result: RemoteResult, code: "SLURM_SUBMIT_FAILED" | "SLURM_QUERY_FAILED" | "SLURM_CANCEL_FAILED" | "SLURM_LOG_FAILED", message: string): never {
@@ -85,6 +88,25 @@ export class SlurmClient {
     return partitions;
   }
 
+  async history(days: number, state: string | undefined, limit: number): Promise<HistoryJob[]> {
+    const args = [
+      "--noheader", "--parsable2", "--allocations", "--local", `--user=${this.user}`,
+      `--starttime=now-${days}days`,
+      "--format=JobIDRaw,User,JobName,Partition,State,Elapsed,Start,End,ExitCode,AllocCPUS,AllocNodes,ReqMem,ReqTRES",
+    ];
+    if (state) args.push(`--state=${state}`);
+    const result = await this.run({ executable: "sacct", args, maxOutputBytes: 1048576 });
+    if (result.exitCode !== 0) failure(result, "SLURM_QUERY_FAILED", "Unable to query Slurm job history.");
+    if (result.stdoutTruncated) {
+      throw new AgentError("SLURM_QUERY_FAILED", "Slurm job history exceeded the safe output limit.", ExitCode.SlurmFailure);
+    }
+    const jobs = parseHistory(result.stdout);
+    if (jobs.some((job) => job.user !== this.user)) {
+      throw new AgentError("SLURM_QUERY_FAILED", "Slurm returned history for another user.", ExitCode.SlurmFailure);
+    }
+    return jobs.reverse().slice(0, limit).map(({ user: _user, ...job }) => job);
+  }
+
   async getOwnedJob(jobId: string): Promise<OwnedJob> {
     const active = await this.run({ executable: "squeue", args: ["--noheader", "--jobs", jobId, "--format=%i|%u|%j|%P|%T|%M"] });
     if (active.exitCode === 0) {
@@ -99,6 +121,46 @@ export class SlurmClient {
     const job = parseAccountingJob(accounting.stdout, jobId);
     if (!job) throw new AgentError("JOB_NOT_FOUND", `Job ${jobId} was not found.`, ExitCode.NotFound);
     return this.assertOwner(job);
+  }
+
+  async usage(jobId: string): Promise<JobUsage> {
+    await this.getOwnedJob(jobId);
+    const accounting = await this.run({
+      executable: "sacct",
+      args: [
+        "--noheader", "--parsable2", "--local", `--jobs=${jobId}`,
+        "--format=JobIDRaw,User,JobName,Partition,State,Elapsed,ElapsedRaw,AllocCPUS,AllocNodes,ReqMem,ReqTRES,AllocTRES,TotalCPU,MaxRSS,MaxVMSize,MaxDiskRead,MaxDiskWrite,ExitCode",
+      ],
+      maxOutputBytes: 1048576,
+    });
+    if (accounting.exitCode !== 0) failure(accounting, "SLURM_QUERY_FAILED", "Unable to query Slurm resource usage.");
+    if (accounting.stdoutTruncated) {
+      throw new AgentError("SLURM_QUERY_FAILED", "Slurm resource usage exceeded the safe output limit.", ExitCode.SlurmFailure);
+    }
+    const parsed = parseJobUsage(accounting.stdout, jobId);
+    if (!parsed) throw new AgentError("JOB_NOT_FOUND", `No accounting usage exists for job ${jobId}.`, ExitCode.NotFound);
+    if (parsed.user !== this.user) {
+      throw new AgentError("JOB_NOT_OWNED_BY_USER", `Job ${jobId} does not belong to the configured SSH user.`, ExitCode.PermissionDenied);
+    }
+    const usage = parsed.usage;
+    if (!isTerminalState(usage.state) && usage.state.toUpperCase() !== "PENDING") {
+      const live = await this.run({
+        executable: "sstat",
+        args: [
+          "--noheader", "--parsable2", "--allsteps", `--jobs=${jobId}`,
+          "--format=JobID,AveCPU,MaxRSS,MaxVMSize,MaxDiskRead,MaxDiskWrite,AllocTRES",
+        ],
+        maxOutputBytes: 1048576,
+      });
+      if (live.exitCode === 0 && !live.stdoutTruncated) {
+        const liveSteps = parseLiveUsage(live.stdout);
+        if (liveSteps.length > 0) {
+          usage.live_steps = liveSteps;
+          usage.live_available = true;
+        }
+      }
+    }
+    return usage;
   }
 
   private assertOwner(job: OwnedJob): OwnedJob {
@@ -247,5 +309,5 @@ const TERMINAL_STATES = new Set([
 ]);
 
 function isTerminalState(state: string): boolean {
-  return TERMINAL_STATES.has(state.split(/[ +]/, 1)[0]!);
+  return TERMINAL_STATES.has(state.toUpperCase().split(/[ +]/, 1)[0]!);
 }

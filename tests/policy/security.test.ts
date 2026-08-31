@@ -3,12 +3,13 @@ import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveLocalArtifactPath, resolveWorkspacePath } from "../../src/policy/path.js";
-import { validateJobId, validateSubmit } from "../../src/policy/validator.js";
+import { validateHistoryState, validateJobId, validateSubmit } from "../../src/policy/validator.js";
 import type { Policy } from "../../src/policy/types.js";
 
 const policy: Policy = {
   allowedPartitions: ["slurm-test"], maxNodes: 2, maxNtasks: 16, maxCpusPerTask: 8,
   maxMemoryGb: 64, maxGpus: 4, maxTimeMinutes: 240, maxWaitSeconds: 3600,
+  maxHistoryDays: 30, maxHistoryJobs: 200,
   maxLogLines: 1000, maxLogBytes: 1048576,
   maxArtifactBytes: 104857600,
   allowedApptainerImages: { pytorch: "/opt/apptainer/pytorch.sif" },
@@ -110,5 +111,13 @@ describe("resource policy", () => {
   );
   it.each(["123;id", "1 && id", "--user", "1_2", "0", "-1", "1\n2"])(
     "rejects injected job ID %j", (jobId) => expect(() => validateJobId(jobId)).toThrow(),
+  );
+});
+
+describe("history filters", () => {
+  it("normalizes supported states", () => expect(validateHistoryState("completed")).toBe("COMPLETED"));
+  it.each(["all", "COMPLETED,RUNNING", "$(id)", "NOT_A_STATE"])(
+    "rejects unsupported state %j",
+    (state) => expect(() => validateHistoryState(state)).toThrow(),
   );
 });

@@ -7,6 +7,7 @@ import type { Policy } from "./types.js";
 const keys = [
   "allowed_partitions", "max_nodes", "max_ntasks", "max_cpus_per_task",
   "max_memory_gb", "max_gpus", "max_time_minutes", "max_wait_seconds", "max_log_lines", "max_log_bytes",
+  "max_history_days", "max_history_jobs",
   "max_artifact_bytes", "allowed_apptainer_images", "allowed_virtualenvs", "allowed_gres",
   "max_script_bytes", "max_script_args", "max_script_arg_length",
   "require_apptainer_for_generated_scripts",
@@ -104,6 +105,8 @@ export function loadPolicy(path: string): Policy {
     maxGpus: nonNegative(data.max_gpus, "max_gpus", 0),
     maxTimeMinutes: positive(data.max_time_minutes, "max_time_minutes"),
     maxWaitSeconds: positive(data.max_wait_seconds, "max_wait_seconds", 86400),
+    maxHistoryDays: positive(data.max_history_days, "max_history_days", 30),
+    maxHistoryJobs: positive(data.max_history_jobs, "max_history_jobs", 200),
     maxLogLines: positive(data.max_log_lines, "max_log_lines", 1000),
     maxLogBytes: positive(data.max_log_bytes, "max_log_bytes", 1048576),
     maxArtifactBytes: positive(data.max_artifact_bytes, "max_artifact_bytes", 104857600),

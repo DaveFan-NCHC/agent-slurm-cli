@@ -6,6 +6,7 @@ import type { RemoteExecutor, RemoteResult, SafeCommand } from "../../src/transp
 const policy: Policy = {
   allowedPartitions: ["slurm-test"], maxNodes: 2, maxNtasks: 16, maxCpusPerTask: 8,
   maxMemoryGb: 64, maxGpus: 4, maxTimeMinutes: 240, maxWaitSeconds: 3600,
+  maxHistoryDays: 30, maxHistoryJobs: 200,
   maxLogLines: 1000, maxLogBytes: 1024,
   maxArtifactBytes: 4096,
   allowedApptainerImages: { pytorch: "/opt/apptainer/pytorch.sif" },
@@ -83,6 +84,90 @@ describe("Slurm client security boundaries", () => {
     ]);
     const client = new SlurmClient(remote, "alice", "/work", policy);
     await expect(client.clusterInfo()).rejects.toMatchObject({ code: "SLURM_QUERY_FAILED" });
+  });
+
+  it("lists bounded history for only the configured user", async () => {
+    const first = [
+      "43", "alice", "old", "slurm-test", "FAILED", "00:01:00",
+      "2026-08-29T10:00:00", "2026-08-29T10:01:00", "1:0", "1", "1", "1Gn", "cpu=1,mem=1G,node=1",
+    ].join("|");
+    const second = [
+      "44", "alice", "new", "slurm-test", "COMPLETED", "00:02:00",
+      "2026-08-30T10:00:00", "2026-08-30T10:02:00", "0:0", "2", "1", "2Gn", "cpu=2,mem=2G,node=1",
+    ].join("|");
+    const remote = new MockExecutor([ok(`${first}\n${second}\n`)]);
+    const client = new SlurmClient(remote, "alice", "/work", policy);
+    await expect(client.history(7, "COMPLETED", 1)).resolves.toEqual([
+      expect.objectContaining({ job_id: "44", state: "COMPLETED" }),
+    ]);
+    expect(remote.commands[0]).toMatchObject({ executable: "sacct", maxOutputBytes: 1048576 });
+    expect(remote.commands[0]?.args).toContain("--user=alice");
+    expect(remote.commands[0]?.args).toContain("--starttime=now-7days");
+    expect(remote.commands[0]?.args).toContain("--state=COMPLETED");
+  });
+
+  it("rejects history rows returned for another user", async () => {
+    const row = [
+      "44", "mallory", "job", "slurm-test", "COMPLETED", "00:01:00",
+      "2026-08-30T10:00:00", "2026-08-30T10:01:00", "0:0", "1", "1", "1Gn", "cpu=1,mem=1G,node=1",
+    ].join("|");
+    const client = new SlurmClient(new MockExecutor([ok(`${row}\n`)]), "alice", "/work", policy);
+    await expect(client.history(7, undefined, 50)).rejects.toMatchObject({ code: "SLURM_QUERY_FAILED" });
+  });
+
+  it("reports completed job usage and derived efficiency", async () => {
+    const allocation = [
+      "44", "alice", "train", "slurm-test", "COMPLETED", "00:10:00", "600", "4", "1", "2Gn",
+      "billing=4,cpu=4,mem=2G,node=1", "billing=4,cpu=4,mem=2G,node=1",
+      "00:20:00", "", "", "", "", "0:0",
+    ].join("|");
+    const batch = [
+      "44.batch", "alice", "batch", "slurm-test", "COMPLETED", "00:10:00", "600", "4", "1", "", "",
+      "cpu=4,mem=2G", "00:20:00", "1G", "2G", "100M", "50M", "0:0",
+    ].join("|");
+    const remote = new MockExecutor([
+      ok(""), ok("44|alice|train|slurm-test|COMPLETED|00:10:00|0:0\n"),
+      ok(`${allocation}\n${batch}\n`),
+    ]);
+    const client = new SlurmClient(remote, "alice", "/work", policy);
+    await expect(client.usage("44")).resolves.toMatchObject({
+      job_id: "44", cpu_efficiency_percent: 50, memory_efficiency_percent: 50,
+      live_available: false, steps: [{ step_id: "44.batch" }],
+    });
+    expect(remote.commands.at(-1)?.executable).toBe("sacct");
+  });
+
+  it("adds live sstat metrics for a running job", async () => {
+    const allocation = [
+      "44", "alice", "train", "slurm-test", "RUNNING", "00:05:00", "300", "4", "1", "2Gn",
+      "billing=4,cpu=4,mem=2G,node=1", "billing=4,cpu=4,mem=2G,node=1",
+      "00:05:00", "", "", "", "", "0:0",
+    ].join("|");
+    const remote = new MockExecutor([
+      ok("44|alice|train|slurm-test|RUNNING|00:05:00\n"), ok(`${allocation}\n`),
+      ok("44.batch|00:01:00|512M|1G|10M|5M|cpu=4,mem=2G\n"),
+    ]);
+    const client = new SlurmClient(remote, "alice", "/work", policy);
+    await expect(client.usage("44")).resolves.toMatchObject({
+      state: "RUNNING", live_available: true,
+      live_steps: [{ step_id: "44.batch", max_rss: "512M" }],
+    });
+    expect(remote.commands.at(-1)?.executable).toBe("sstat");
+  });
+
+  it("keeps accounting usage when live metrics have no steps", async () => {
+    const allocation = [
+      "44", "alice", "train", "slurm-test", "RUNNING", "00:05:00", "300", "4", "1", "2Gn",
+      "billing=4,cpu=4,mem=2G,node=1", "billing=4,cpu=4,mem=2G,node=1",
+      "00:05:00", "", "", "", "", "0:0",
+    ].join("|");
+    const remote = new MockExecutor([
+      ok("44|alice|train|slurm-test|RUNNING|00:05:00\n"), ok(`${allocation}\n`), ok(),
+    ]);
+    const client = new SlurmClient(remote, "alice", "/work", policy);
+    await expect(client.usage("44")).resolves.toMatchObject({
+      state: "RUNNING", live_available: false, live_steps: [],
+    });
   });
 
   it("passes validated GPU and GRES requests to sbatch", async () => {

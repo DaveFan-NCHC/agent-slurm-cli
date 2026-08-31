@@ -1,4 +1,4 @@
-export type RemoteExecutable = "realpath" | "test" | "mkdir" | "sbatch" | "squeue" | "sacct" | "scancel" | "sinfo" | "tail";
+export type RemoteExecutable = "realpath" | "test" | "mkdir" | "sbatch" | "squeue" | "sacct" | "scancel" | "sinfo" | "sstat" | "tail";
 
 export interface SafeCommand {
   executable: RemoteExecutable;

@@ -34,6 +34,8 @@ allowed_virtualenvs:
       expect(policy.allowedVirtualenvs["project-a"]).toBe("/opt/venvs/project-a");
       expect(policy.maxGpus).toBe(0);
       expect(policy.maxWaitSeconds).toBe(86400);
+      expect(policy.maxHistoryDays).toBe(30);
+      expect(policy.maxHistoryJobs).toBe(200);
     } finally { fixture.cleanup(); }
   });
 
@@ -41,6 +43,8 @@ allowed_virtualenvs:
     const fixture = policyFile(`${base}
 max_gpus: 4
 max_wait_seconds: 7200
+max_history_days: 14
+max_history_jobs: 75
 allowed_gres:
   a100x2: gpu:a100:2
 `);
@@ -48,6 +52,8 @@ allowed_gres:
       const policy = loadPolicy(fixture.path);
       expect(policy.maxGpus).toBe(4);
       expect(policy.maxWaitSeconds).toBe(7200);
+      expect(policy.maxHistoryDays).toBe(14);
+      expect(policy.maxHistoryJobs).toBe(75);
       expect(policy.allowedGres.a100x2).toBe("gpu:a100:2");
     } finally { fixture.cleanup(); }
   });

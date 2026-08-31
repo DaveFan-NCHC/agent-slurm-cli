@@ -26,6 +26,11 @@ export interface NormalizedSubmit extends SubmitOptions {
 }
 
 const runtimeAliasPattern = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
+const historyStates = new Set([
+  "BOOT_FAIL", "CANCELLED", "COMPLETED", "DEADLINE", "FAILED", "NODE_FAIL",
+  "OUT_OF_MEMORY", "PENDING", "PREEMPTED", "RUNNING", "REQUEUED", "RESIZING",
+  "REVOKED", "SUSPENDED", "TIMEOUT",
+]);
 
 function resolveRuntimeAlias(alias: string | undefined, allowed: Record<string, string>, label: string): string | undefined {
   if (alias === undefined) return undefined;
@@ -48,6 +53,12 @@ export function parsePositiveInteger(text: string, option: string): number {
   const value = Number(text);
   if (!Number.isSafeInteger(value)) throw invalid(`${option} is too large.`);
   return value;
+}
+
+export function validateHistoryState(value: string): string {
+  const normalized = value.toUpperCase();
+  if (!historyStates.has(normalized)) throw invalid("--state is not a supported Slurm job state.");
+  return normalized;
 }
 
 export function parseMemoryGb(text: string): number {
