@@ -7,11 +7,14 @@ export interface SshConfig {
   user: string;
   authentication:
     | { type: "private-key"; keyPath: string }
-    | { type: "password"; password: string };
+    | { type: "password"; password: string }
+    | { type: "keyboard-interactive-password"; password: string };
   knownHostsPath?: string;
   hostFingerprint?: string;
   workspace: string;
   timeoutMs: number;
+  readyTimeoutMs: number;
+  pushAuthentication: boolean;
 }
 
 export interface AppConfig {
@@ -48,6 +51,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 600000) {
     throw new AgentError("CONFIGURATION_ERROR", "SLURM_COMMAND_TIMEOUT_MS must be between 1000 and 600000.", ExitCode.General);
   }
+  const pushText = env.SLURM_SSH_PUSH_AUTH?.trim().toLowerCase();
+  if (pushText !== undefined && pushText !== "true" && pushText !== "false") {
+    throw new AgentError("CONFIGURATION_ERROR", "SLURM_SSH_PUSH_AUTH must be true or false.", ExitCode.General);
+  }
+  const pushAuthentication = pushText === "true";
+  const readyTimeoutText = env.SLURM_SSH_AUTH_TIMEOUT_MS?.trim()
+    || (pushAuthentication ? "120000" : String(timeoutMs));
+  const readyTimeoutMs = Number(readyTimeoutText);
+  if (!Number.isInteger(readyTimeoutMs) || readyTimeoutMs < 1000 || readyTimeoutMs > 600000) {
+    throw new AgentError("CONFIGURATION_ERROR", "SLURM_SSH_AUTH_TIMEOUT_MS must be between 1000 and 600000.", ExitCode.General);
+  }
   const knownHostsPath = env.SLURM_SSH_KNOWN_HOSTS?.trim();
   const hostFingerprint = env.SLURM_SSH_HOST_FINGERPRINT?.trim();
   if (!knownHostsPath && !hostFingerprint) {
@@ -60,6 +74,22 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const keyPath = env.SLURM_SSH_KEY_PATH?.trim();
   const password = env.SLURM_SSH_PASSWORD;
   const hasPassword = password !== undefined && password.length > 0;
+  const passwordMethodValue = env.SLURM_SSH_PASSWORD_AUTH_METHOD?.trim().toLowerCase();
+  const passwordMethod = passwordMethodValue || "password";
+  if (passwordMethod !== "password" && passwordMethod !== "keyboard-interactive") {
+    throw new AgentError(
+      "CONFIGURATION_ERROR",
+      "SLURM_SSH_PASSWORD_AUTH_METHOD must be password or keyboard-interactive.",
+      ExitCode.General,
+    );
+  }
+  if (keyPath && passwordMethodValue) {
+    throw new AgentError(
+      "CONFIGURATION_ERROR",
+      "SLURM_SSH_PASSWORD_AUTH_METHOD can be set only with SLURM_SSH_PASSWORD.",
+      ExitCode.General,
+    );
+  }
   if (keyPath && hasPassword) {
     throw new AgentError(
       "CONFIGURATION_ERROR",
@@ -88,11 +118,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       user: required(env, "SLURM_SSH_USER"),
       authentication: keyPath
         ? { type: "private-key", keyPath }
-        : { type: "password", password: password! },
+        : passwordMethod === "keyboard-interactive"
+          ? { type: "keyboard-interactive-password", password: password! }
+          : { type: "password", password: password! },
       knownHostsPath,
       hostFingerprint,
       workspace,
       timeoutMs,
+      readyTimeoutMs,
+      pushAuthentication,
     },
     policyPath: env.SLURM_POLICY_PATH?.trim() || "./slurm-agent-policy.yaml",
     auditLogPath: env.SLURM_AUDIT_LOG?.trim() || undefined,

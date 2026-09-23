@@ -73,6 +73,9 @@ export class SshExecutor implements RemoteExecutor {
       let hostVerified = false;
       let verifierCalled = false;
       let settled = false;
+      let primaryAttempted = false;
+      let pushAttempted = false;
+      let passwordPromptAnswered = false;
       let verifier: (key: Buffer) => boolean;
       try { verifier = makeHostVerifier(this.config); } catch (error) { reject(error); return; }
       const finishReject = (error: AgentError): void => {
@@ -83,26 +86,91 @@ export class SshExecutor implements RemoteExecutor {
         reject(error);
       };
       client.once("ready", () => {
+        if (this.config.authentication.type === "keyboard-interactive-password" && !passwordPromptAnswered) {
+          finishReject(new AgentError(
+            "SSH_AUTH_FAILED",
+            "SSH keyboard-interactive authentication completed without the required password prompt.",
+            ExitCode.SshFailure,
+          ));
+          return;
+        }
+        const combinedPamPushCompleted = this.config.authentication.type === "keyboard-interactive-password"
+          && passwordPromptAnswered;
+        if (this.config.pushAuthentication && !pushAttempted && !combinedPamPushCompleted) {
+          finishReject(new AgentError(
+            "SSH_AUTH_FAILED",
+            "SSH authentication completed without the required push approval.",
+            ExitCode.SshFailure,
+          ));
+          return;
+        }
         settled = true;
         this.client = client;
         resolve(client);
       });
       client.once("error", (cause: Error & { level?: string }) => {
+        if (this.config.pushAuthentication && cause.level === "client-timeout") {
+          finishReject(new AgentError(
+            "SSH_AUTH_FAILED",
+            "SSH push approval timed out or was not completed.",
+            ExitCode.SshFailure,
+          ));
+          return;
+        }
         const auth = cause.level === "client-authentication";
         const code = verifierCalled && !hostVerified ? "SSH_HOST_VERIFICATION_FAILED" : auth ? "SSH_AUTH_FAILED" : "SSH_CONNECTION_FAILED";
         finishReject(new AgentError(code, `SSH connection failed: ${cause.message}`, ExitCode.SshFailure));
       });
       client.once("close", () => { this.client = undefined; this.connecting = undefined; });
+      if (this.config.pushAuthentication || this.config.authentication.type === "keyboard-interactive-password") {
+        client.on("keyboard-interactive", (_name, _instructions, _lang, prompts, finish) => {
+          if (this.config.authentication.type === "keyboard-interactive-password"
+              && !passwordPromptAnswered && prompts.length === 1 && prompts[0]?.echo === false) {
+            passwordPromptAnswered = true;
+            finish([this.config.authentication.password]);
+            return;
+          }
+          finishReject(new AgentError(
+            "SSH_AUTH_FAILED",
+            "SSH keyboard-interactive authentication requested an unsupported prompt.",
+            ExitCode.SshFailure,
+          ));
+        });
+      }
       const authentication: Pick<ConnectConfig, "privateKey" | "password"> =
         this.config.authentication.type === "private-key"
           ? { privateKey: readFileSync(this.config.authentication.keyPath) }
-          : { password: this.config.authentication.password };
+          : this.config.authentication.type === "password"
+            ? { password: this.config.authentication.password }
+            : {};
+      const primaryMethod = this.config.authentication.type === "private-key"
+        ? "publickey"
+        : this.config.authentication.type === "password" ? "password" : "keyboard-interactive";
+      const explicitAuthentication = this.config.pushAuthentication
+        || this.config.authentication.type === "keyboard-interactive-password";
+      const authHandler: ConnectConfig["authHandler"] = explicitAuthentication
+        ? (methodsLeft, partialSuccess, next) => {
+            if (!primaryAttempted) {
+              primaryAttempted = true;
+              next(primaryMethod);
+              return;
+            }
+            if (!pushAttempted && partialSuccess && methodsLeft.includes("keyboard-interactive")) {
+              pushAttempted = true;
+              next("keyboard-interactive");
+              return;
+            }
+            next(false as never);
+          }
+        : undefined;
       const connection: ConnectConfig = {
         host: this.config.host,
         port: this.config.port,
         username: this.config.user,
         ...authentication,
-        readyTimeout: this.config.timeoutMs,
+        tryKeyboard: explicitAuthentication,
+        ...(authHandler ? { authHandler } : {}),
+        readyTimeout: this.config.readyTimeoutMs,
         hostVerifier: (key: Buffer) => { verifierCalled = true; hostVerified = verifier(key); return hostVerified; },
         keepaliveInterval: 10000,
         keepaliveCountMax: 3,

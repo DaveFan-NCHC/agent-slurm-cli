@@ -65,12 +65,44 @@ export SLURM_POLICY_PATH=/etc/slurm-agent/policy.yaml
 export SLURM_AUDIT_LOG=/var/log/slurm-agent/audit.jsonl
 ```
 
+### Supported SSH authentication scenarios
+
+| Scenario | Expected server flow | Required authentication configuration |
+|---|---|---|
+| Private key | `publickey` | `SLURM_SSH_KEY_PATH` |
+| Standard SSH password | `password` | `SLURM_SSH_PASSWORD`; leave `SLURM_SSH_PASSWORD_AUTH_METHOD` unset or set it to `password` |
+| PAM password | One hidden password prompt through `keyboard-interactive` | `SLURM_SSH_PASSWORD` and `SLURM_SSH_PASSWORD_AUTH_METHOD=keyboard-interactive` |
+| Private key plus automatic push | `publickey` partial success, followed by zero-prompt `keyboard-interactive` while the server waits for approval | `SLURM_SSH_KEY_PATH` and `SLURM_SSH_PUSH_AUTH=true` |
+| Standard password plus automatic push | `password` partial success, followed by zero-prompt `keyboard-interactive` while the server waits for approval | `SLURM_SSH_PASSWORD` and `SLURM_SSH_PUSH_AUTH=true` |
+| PAM password plus automatic push | One hidden password prompt, followed by an automatic push in the same PAM `keyboard-interactive` exchange | `SLURM_SSH_PASSWORD`, `SLURM_SSH_PASSWORD_AUTH_METHOD=keyboard-interactive`, and `SLURM_SSH_PUSH_AUTH=true` |
+
+All scenarios still require `SLURM_SSH_KNOWN_HOSTS` or `SLURM_SSH_HOST_FINGERPRINT`. The CLI does not support prompts for dynamic OTP values, recovery codes, push-option selection, arbitrary multi-question challenges, or WebAuthn/FIDO interaction. A push flow must be initiated automatically by the server and completed out of band on the user's device.
+
 Choose exactly one SSH authentication method. Private-key authentication uses `SLURM_SSH_KEY_PATH` as shown above. To use password authentication instead, omit that variable and set the password in the trusted runtime environment:
 
 ```bash
 unset SLURM_SSH_KEY_PATH
 export SLURM_SSH_PASSWORD='cluster-login-password'
 ```
+
+If PAM exposes the password as a single hidden `keyboard-interactive` prompt instead of the SSH `password` method, select it explicitly. The CLI answers exactly one hidden prompt with `SLURM_SSH_PASSWORD`; additional, visible, or OTP prompts are rejected:
+
+```bash
+unset SLURM_SSH_KEY_PATH
+export SLURM_SSH_PASSWORD='cluster-login-password'
+export SLURM_SSH_PASSWORD_AUTH_METHOD=keyboard-interactive
+```
+
+For private-key or standard-password authentication followed by automatic out-of-band push approval, the server must report the first method as partially successful and then offer zero-prompt `keyboard-interactive`. Enable it with:
+
+```bash
+export SLURM_SSH_PUSH_AUTH=true
+export SLURM_SSH_AUTH_TIMEOUT_MS=120000
+```
+
+The PAM password mode can also wait for an automatic push within the same keyboard-interactive exchange. In that case use both `SLURM_SSH_PASSWORD_AUTH_METHOD=keyboard-interactive` and `SLURM_SSH_PUSH_AUTH=true`; after receiving the password, the server must initiate the push without another prompt.
+
+The authentication timeout defaults to 120 seconds in push mode and can be set from 1000 to 600000 milliseconds. The CLI waits on the same SSH connection until the user approves, denies, or the timeout expires. Every CLI invocation creates a new SSH connection and may therefore generate a new push request. Modes that ask the CLI to enter an OTP or select a push option are rejected.
 
 Do not put the password in command-line arguments or agent-generated input. `SLURM_SSH_KNOWN_HOSTS` must contain a plain hostname entry (or `[host]:port` for a non-default port). Hashed hostnames are not parsed. As an alternative, set `SLURM_SSH_HOST_FINGERPRINT` to a pinned `SHA256:...` host-key fingerprint. One of these verification methods remains mandatory for either authentication method; insecure host-key checking is not available.
 
