@@ -5,7 +5,9 @@ export interface SshConfig {
   host: string;
   port: number;
   user: string;
-  keyPath: string;
+  authentication:
+    | { type: "private-key"; keyPath: string }
+    | { type: "password"; password: string };
   knownHostsPath?: string;
   hostFingerprint?: string;
   workspace: string;
@@ -55,12 +57,28 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       ExitCode.General,
     );
   }
-  const keyPath = required(env, "SLURM_SSH_KEY_PATH");
+  const keyPath = env.SLURM_SSH_KEY_PATH?.trim();
+  const password = env.SLURM_SSH_PASSWORD;
+  const hasPassword = password !== undefined && password.length > 0;
+  if (keyPath && hasPassword) {
+    throw new AgentError(
+      "CONFIGURATION_ERROR",
+      "Set exactly one of SLURM_SSH_KEY_PATH or SLURM_SSH_PASSWORD, not both.",
+      ExitCode.General,
+    );
+  }
+  if (!keyPath && !hasPassword) {
+    throw new AgentError(
+      "CONFIGURATION_ERROR",
+      "SLURM_SSH_KEY_PATH or SLURM_SSH_PASSWORD is required.",
+      ExitCode.General,
+    );
+  }
   try {
-    readFileSync(keyPath);
+    if (keyPath) readFileSync(keyPath);
     if (knownHostsPath) readFileSync(knownHostsPath);
   } catch (cause) {
-    throw new AgentError("CONFIGURATION_ERROR", `SSH credential or known_hosts file is not readable: ${(cause as Error).message}`, ExitCode.General);
+    throw new AgentError("CONFIGURATION_ERROR", `SSH key or known_hosts file is not readable: ${(cause as Error).message}`, ExitCode.General);
   }
   const workspace = safeRemotePath(required(env, "SLURM_REMOTE_WORKSPACE"), "SLURM_REMOTE_WORKSPACE");
   return {
@@ -68,7 +86,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       host: required(env, "SLURM_SSH_HOST"),
       port,
       user: required(env, "SLURM_SSH_USER"),
-      keyPath,
+      authentication: keyPath
+        ? { type: "private-key", keyPath }
+        : { type: "password", password: password! },
       knownHostsPath,
       hostFingerprint,
       workspace,

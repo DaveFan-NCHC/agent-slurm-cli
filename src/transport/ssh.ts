@@ -93,11 +93,15 @@ export class SshExecutor implements RemoteExecutor {
         finishReject(new AgentError(code, `SSH connection failed: ${cause.message}`, ExitCode.SshFailure));
       });
       client.once("close", () => { this.client = undefined; this.connecting = undefined; });
+      const authentication: Pick<ConnectConfig, "privateKey" | "password"> =
+        this.config.authentication.type === "private-key"
+          ? { privateKey: readFileSync(this.config.authentication.keyPath) }
+          : { password: this.config.authentication.password };
       const connection: ConnectConfig = {
         host: this.config.host,
         port: this.config.port,
         username: this.config.user,
-        privateKey: readFileSync(this.config.keyPath),
+        ...authentication,
         readyTimeout: this.config.timeoutMs,
         hostVerifier: (key: Buffer) => { verifierCalled = true; hostVerified = verifier(key); return hostVerified; },
         keepaliveInterval: 10000,

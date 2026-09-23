@@ -47,3 +47,31 @@ describe("configuration path safety", () => {
       .toThrowError(/SLURM_REMOTE_APPTAINER_PATH must be a safe absolute POSIX path/);
   });
 });
+
+describe("SSH authentication configuration", () => {
+  it("uses private-key authentication by default", () => {
+    const config = loadConfig(environment());
+    expect(config.ssh.authentication).toMatchObject({ type: "private-key" });
+  });
+
+  it("accepts password authentication without a private key", () => {
+    const config = loadConfig(environment({
+      SLURM_SSH_KEY_PATH: undefined,
+      SLURM_SSH_PASSWORD: " secret with spaces ",
+    }));
+    expect(config.ssh.authentication).toEqual({
+      type: "password",
+      password: " secret with spaces ",
+    });
+  });
+
+  it("rejects configuring both a private key and a password", () => {
+    expect(() => loadConfig(environment({ SLURM_SSH_PASSWORD: "secret" })))
+      .toThrowError(/exactly one of SLURM_SSH_KEY_PATH or SLURM_SSH_PASSWORD/);
+  });
+
+  it("requires one supported SSH authentication method", () => {
+    expect(() => loadConfig(environment({ SLURM_SSH_KEY_PATH: undefined })))
+      .toThrowError(/SLURM_SSH_KEY_PATH or SLURM_SSH_PASSWORD is required/);
+  });
+});
