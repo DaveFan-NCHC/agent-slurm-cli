@@ -457,7 +457,12 @@ export async function main(
     } catch {
       // Preserve the original error and stdout contract if audit storage is unavailable.
     }
-    writeJson(stdout, { ok: false, error: { code: error.code, message: error.message } });
+    const responseError: Record<string, unknown> = { code: error.code, message: error.message };
+    if (typeof error.details?.slurm_message === "string") {
+      responseError.slurm_message = error.details.slurm_message;
+      if (error.details.slurm_message_truncated === true) responseError.slurm_message_truncated = true;
+    }
+    writeJson(stdout, { ok: false, error: responseError });
     return error.exitCode;
   } finally {
     await executor?.close().catch(() => undefined);

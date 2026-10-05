@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { stripVTControlCharacters } from "node:util";
 import { AgentError, ExitCode } from "../errors/errors.js";
 import { isContained, resolveLocalArtifactPath, resolveWorkspacePath } from "../policy/path.js";
 import type { PreparedScript } from "../policy/script.js";
@@ -18,13 +19,38 @@ import { TRUSTED_RUNNER } from "./runner.js";
 const QUEUE_LIST_FORMAT = "%i|%j|%P|%T|%M|%r|%Q|%S|%V|%l|%L|%N|%D|%C|%a|%q|%v";
 const QUEUE_JOB_FORMAT = "%i|%u|%j|%P|%T|%M|%r|%Q|%S|%V|%l|%L|%N|%D|%C|%a|%q|%v";
 const ACCOUNTING_JOB_FORMAT = "JobIDRaw,User,JobName,Partition,State,Elapsed,ExitCode,Reason,Priority,Start,Submit,Timelimit,NodeList,AllocNodes,AllocCPUS,Account,QOS,Reservation";
+const MAX_EXPOSED_SLURM_MESSAGE_BYTES = 4096;
+
+function exposedSlurmMessage(result: RemoteResult): Record<string, unknown> {
+  const sanitized = stripVTControlCharacters(result.stderr)
+    .replace(/\r\n?/g, "\n")
+    .replace(/\p{C}/gu, (character) => character === "\n" || character === "\t" ? character : "")
+    .trim();
+  if (!sanitized) return {};
+  let message = "";
+  let bytes = 0;
+  for (const character of sanitized) {
+    const characterBytes = Buffer.byteLength(character);
+    if (bytes + characterBytes > MAX_EXPOSED_SLURM_MESSAGE_BYTES) break;
+    message += character;
+    bytes += characterBytes;
+  }
+  const truncated = result.stderrTruncated === true || bytes < Buffer.byteLength(sanitized);
+  return {
+    slurm_message: message,
+    ...(truncated ? { slurm_message_truncated: true } : {}),
+  };
+}
 
 function failure(
   result: RemoteResult,
   code: "SLURM_SUBMIT_FAILED" | "SLURM_QUERY_FAILED" | "SLURM_CANCEL_FAILED" | "SLURM_CONTROL_FAILED" | "SLURM_LOG_FAILED",
   message: string,
 ): never {
-  throw new AgentError(code, message, ExitCode.SlurmFailure, { remote_exit_code: result.exitCode });
+  throw new AgentError(code, message, ExitCode.SlurmFailure, {
+    remote_exit_code: result.exitCode,
+    ...exposedSlurmMessage(result),
+  });
 }
 
 function validateExportPath(path: string, label: string): string {

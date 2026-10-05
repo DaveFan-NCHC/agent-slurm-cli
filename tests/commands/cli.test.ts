@@ -13,14 +13,17 @@ class Sink {
 class SubmitExecutor implements RemoteExecutor {
   readonly commands: SafeCommand[] = [];
   readonly uploads: SafeSubmissionUpload[] = [];
-  private readonly results: RemoteResult[] = [
-    { stdout: "/work\n", stderr: "", exitCode: 0 },
-    { stdout: "", stderr: "", exitCode: 0 },
-    { stdout: "/work/.slurm-agent/logs\n", stderr: "", exitCode: 0 },
-    { stdout: "/work/.slurm-agent/artifacts\n", stderr: "", exitCode: 0 },
-    { stdout: "/work/.slurm-agent/submissions/staged\n", stderr: "", exitCode: 0 },
-    { stdout: "12345\n", stderr: "", exitCode: 0 },
-  ];
+  private readonly results: RemoteResult[];
+  constructor(submitResult: RemoteResult = { stdout: "12345\n", stderr: "", exitCode: 0 }) {
+    this.results = [
+      { stdout: "/work\n", stderr: "", exitCode: 0 },
+      { stdout: "", stderr: "", exitCode: 0 },
+      { stdout: "/work/.slurm-agent/logs\n", stderr: "", exitCode: 0 },
+      { stdout: "/work/.slurm-agent/artifacts\n", stderr: "", exitCode: 0 },
+      { stdout: "/work/.slurm-agent/submissions/staged\n", stderr: "", exitCode: 0 },
+      submitResult,
+    ];
+  }
   async run(command: SafeCommand): Promise<RemoteResult> {
     this.commands.push(command);
     return this.results.shift()!;
@@ -177,6 +180,36 @@ require_apptainer_for_generated_scripts: false
         ok: true, job_id: "12346", dependency: "afterok:77",
       });
       expect(dependencyRemote.commands.at(-1)?.args).toContain("--dependency=afterok:77");
+
+      const rejectedRemote = new SubmitExecutor({
+        stdout: "",
+        stderr: "\u001b[31msbatch: error:\u001b[0m Invalid account\u0000\n" + "x".repeat(5000),
+        exitCode: 1,
+      });
+      const rejectedOutput = new Sink();
+      expect(await main(
+        ["submit", "-p", "p", "jobs/train.sh"],
+        {
+          SLURM_SSH_HOST: "host", SLURM_SSH_USER: "alice", SLURM_SSH_KEY_PATH: join(root, "key"),
+          SLURM_SSH_KNOWN_HOSTS: join(root, "known_hosts"), SLURM_REMOTE_WORKSPACE: "/work",
+          SLURM_LOCAL_JOB_WORKSPACE: root, SLURM_POLICY_PATH: join(root, "policy.yaml"),
+        },
+        rejectedOutput,
+        new Sink() as never,
+        () => rejectedRemote,
+      )).toBe(5);
+      const rejected = JSON.parse(rejectedOutput.value);
+      expect(rejected).toMatchObject({
+        ok: false,
+        error: {
+          code: "SLURM_SUBMIT_FAILED",
+          message: "Slurm rejected the submission.",
+          slurm_message_truncated: true,
+        },
+      });
+      expect(rejected.error.slurm_message.startsWith("sbatch: error: Invalid account\n")).toBe(true);
+      expect(rejected.error.slurm_message).not.toContain("\u001b");
+      expect(Buffer.byteLength(rejected.error.slurm_message)).toBeLessThanOrEqual(4096);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

@@ -67,6 +67,34 @@ describe("Slurm client security boundaries", () => {
     expect(remote.uploads[0]?.remotePath).toBe("/work/.slurm-agent/submissions/staged/payload");
   });
 
+  it("exposes bounded sanitized sbatch diagnostics when submission is rejected", async () => {
+    const remote = new MockExecutor([
+      ok("/work\n"), ok(), ok("/work/.slurm-agent/logs\n"),
+      ok("/work/.slurm-agent/artifacts\n"), ok("/work/.slurm-agent/submissions/staged\n"),
+      {
+        stdout: "",
+        stderr: "\u001b[31msbatch: error:\u001b[0m Invalid account\u0000\n" + "界".repeat(2000),
+        exitCode: 1,
+      },
+    ]);
+    const client = new SlurmClient(remote, "alice", "/work", policy);
+    const failure = await client.submit({
+      script: "jobs/test.sh", partition: "slurm-test", nodes: 1, ntasks: 1, cpusPerTask: 1,
+      memory: "1G", time: "00:10:00", memoryGb: 1, timeMinutes: 10, scriptArgs: [],
+    }, prepared).catch((error: unknown) => error);
+
+    expect(failure).toMatchObject({
+      code: "SLURM_SUBMIT_FAILED",
+      details: {
+        remote_exit_code: 1,
+        slurm_message_truncated: true,
+      },
+    });
+    expect(failure.details.slurm_message.startsWith("sbatch: error: Invalid account\n")).toBe(true);
+    expect(failure.details.slurm_message).not.toContain("\u001b");
+    expect(Buffer.byteLength(failure.details.slurm_message)).toBeLessThanOrEqual(4096);
+  });
+
   it("passes policy-resolved scheduler aliases to sbatch", async () => {
     const remote = new MockExecutor([
       ok("/work\n"), ok(), ok("/work/.slurm-agent/logs\n"),
@@ -279,6 +307,22 @@ describe("Slurm client security boundaries", () => {
     ]);
     const client = new SlurmClient(remote, "alice", "/work", policy);
     await expect(client.clusterInfo()).rejects.toMatchObject({ code: "SLURM_QUERY_FAILED" });
+  });
+
+  it("exposes sanitized diagnostics for non-submit Slurm command failures", async () => {
+    const client = new SlurmClient(new MockExecutor([{
+      stdout: "",
+      stderr: "\u001b[31msinfo: error:\u001b[0m controller unavailable\u0000\n",
+      exitCode: 1,
+    }]), "alice", "/work", policy);
+
+    await expect(client.clusterInfo()).rejects.toMatchObject({
+      code: "SLURM_QUERY_FAILED",
+      details: {
+        remote_exit_code: 1,
+        slurm_message: "sinfo: error: controller unavailable",
+      },
+    });
   });
 
   it("lists bounded history for only the configured user", async () => {

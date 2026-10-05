@@ -348,6 +348,8 @@ Errors retain a stable machine-readable code, for example:
 {"ok":false,"error":{"code":"PARTITION_NOT_ALLOWED","message":"Partition gpu is not permitted."}}
 ```
 
+If a remote Slurm command fails, the error object also includes a sanitized `slurm_message` from remote stderr when one is available. It is limited to 4096 UTF-8 bytes; `slurm_message_truncated: true` indicates that additional output was omitted. Raw Slurm stderr is not written to the audit log.
+
 ## Security model and limitations
 
 - Every remote command consists of a compile-time executable allowlist plus separately shell-quoted arguments; no shell fragments are accepted.
