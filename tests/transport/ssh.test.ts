@@ -9,6 +9,7 @@ const captured = vi.hoisted(() => ({
   interactivePromptEcho: false,
   replies: [] as string[][],
   completeAfterPrimary: false,
+  connectionErrors: [] as Array<{ message: string; level: string }>,
 }));
 
 vi.mock("ssh2", async () => {
@@ -23,6 +24,15 @@ vi.mock("ssh2", async () => {
     connect(connection: ConnectConfig): this {
       captured.connection = connection;
       captured.connections.push(connection);
+      if (captured.connectionErrors.length > 0) {
+        const errors = captured.connectionErrors.splice(0);
+        queueMicrotask(() => {
+          for (const spec of errors) {
+            this.emit("error", Object.assign(new Error(spec.message), { level: spec.level }));
+          }
+        });
+        return this;
+      }
       if (typeof connection.authHandler !== "function") {
         queueMicrotask(() => this.emit("ready"));
         return this;
@@ -111,6 +121,31 @@ describe("SSH authentication", () => {
     captured.interactivePromptEcho = false;
     captured.replies = [];
     captured.completeAfterPrimary = false;
+    captured.connectionErrors = [];
+  });
+
+  it("absorbs follow-up connection errors after rejecting the handshake", async () => {
+    captured.connectionErrors = [
+      { message: "Timed out while waiting for handshake", level: "client-timeout" },
+      { message: "Connection lost before handshake", level: "protocol" },
+    ];
+    const executor = new SshExecutor({
+      host: "login.example",
+      port: 22,
+      user: "alice",
+      authentication: { type: "password", password: "test password" },
+      hostFingerprint: "SHA256:test",
+      workspace: "/work",
+      timeoutMs: 30000,
+      readyTimeoutMs: 30000,
+      pushAuthentication: false,
+    });
+
+    await expect(executor.run({ executable: "squeue", args: [] })).rejects.toMatchObject({
+      code: "SSH_CONNECTION_FAILED",
+      message: "SSH connection failed: Timed out while waiting for handshake",
+    });
+    await executor.close();
   });
 
   it("uses a separate configured connection for SFTP transfers", async () => {

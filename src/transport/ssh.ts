@@ -111,7 +111,8 @@ export class SshExecutor implements RemoteExecutor {
         state.client = client;
         resolve(client);
       });
-      client.once("error", (cause: Error & { level?: string }) => {
+      client.on("error", (cause: Error & { level?: string }) => {
+        if (settled) return;
         if (config.pushAuthentication && cause.level === "client-timeout") {
           finishReject(new AgentError(
             "SSH_AUTH_FAILED",
