@@ -121,3 +121,49 @@ describe("SSH authentication configuration", () => {
     expect(() => loadConfig(environment(overrides))).toThrowError(message);
   });
 });
+
+describe("SFTP endpoint configuration", () => {
+  it("uses the SSH connection for transfers when no SFTP endpoint is configured", () => {
+    const config = loadConfig(environment());
+    expect(config.ssh.sftp).toBeUndefined();
+  });
+
+  it("configures a separate SFTP endpoint while inheriting SSH identity and authentication", () => {
+    const config = loadConfig(environment({ SLURM_SFTP_PORT: "2222" }));
+    expect(config.ssh.sftp).toMatchObject({
+      host: "host",
+      port: 2222,
+      user: "alice",
+      authentication: { type: "private-key" },
+      knownHostsPath: config.ssh.knownHostsPath,
+    });
+  });
+
+  it("accepts a separate SFTP host, user, and host fingerprint", () => {
+    const config = loadConfig(environment({
+      SLURM_SFTP_HOST: "transfer.example",
+      SLURM_SFTP_PORT: "2222",
+      SLURM_SFTP_USER: "transfer-alice",
+      SLURM_SFTP_HOST_FINGERPRINT: "SHA256:sftp-key",
+    }));
+    expect(config.ssh.sftp).toMatchObject({
+      host: "transfer.example",
+      port: 2222,
+      user: "transfer-alice",
+      hostFingerprint: "SHA256:sftp-key",
+    });
+  });
+
+  it("requires separate verification when only an SSH fingerprint covers a different SFTP endpoint", () => {
+    expect(() => loadConfig(environment({
+      SLURM_SSH_KNOWN_HOSTS: undefined,
+      SLURM_SSH_HOST_FINGERPRINT: "SHA256:ssh-key",
+      SLURM_SFTP_PORT: "2222",
+    }))).toThrowError(/separately configured SFTP endpoint requires/);
+  });
+
+  it("rejects an invalid SFTP port", () => {
+    expect(() => loadConfig(environment({ SLURM_SFTP_PORT: "0" })))
+      .toThrowError(/SLURM_SFTP_PORT must be an integer from 1 to 65535/);
+  });
+});

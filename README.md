@@ -65,6 +65,18 @@ export SLURM_POLICY_PATH=/etc/slurm-agent/policy.yaml
 export SLURM_AUDIT_LOG=/var/log/slurm-agent/audit.jsonl
 ```
 
+By default, controlled uploads and downloads use the same SSH connection. If the cluster exposes a dedicated SFTP endpoint, configure it separately; the SFTP user and authentication method inherit from the SSH settings:
+
+```bash
+export SLURM_SFTP_HOST=transfer.cluster.example
+export SLURM_SFTP_PORT=2222
+export SLURM_SFTP_KNOWN_HOSTS=/etc/slurm-agent/known_hosts
+```
+
+`SLURM_SFTP_HOST` and `SLURM_SFTP_PORT` independently default to their `SLURM_SSH_*` counterparts once any `SLURM_SFTP_*` setting is present. `SLURM_SFTP_USER` can override the inherited SSH user. The command connection continues to execute the constrained Slurm commands, while submission uploads and artifact downloads use only the transfer connection.
+
+For Nano4, use `nano4.nchc.org.tw:22` for `SLURM_SSH_*` and `nano4.nchc.org.tw:2222` for `SLURM_SFTP_*`. Both endpoints must expose the configured `/home` or `/work` path. The known-hosts file must contain entries for both `nano4.nchc.org.tw` and `[nano4.nchc.org.tw]:2222`.
+
 ### Supported SSH authentication scenarios
 
 | Scenario | Expected server flow | Required authentication configuration |
@@ -104,7 +116,7 @@ The PAM password mode can also wait for an automatic push within the same keyboa
 
 The authentication timeout defaults to 120 seconds in push mode and can be set from 1000 to 600000 milliseconds. The CLI waits on the same SSH connection until the user approves, denies, or the timeout expires. Every CLI invocation creates a new SSH connection and may therefore generate a new push request. Modes that ask the CLI to enter an OTP or select a push option are rejected.
 
-Do not put the password in command-line arguments or agent-generated input. `SLURM_SSH_KNOWN_HOSTS` must contain a plain hostname entry (or `[host]:port` for a non-default port). Hashed hostnames are not parsed. As an alternative, set `SLURM_SSH_HOST_FINGERPRINT` to a pinned `SHA256:...` host-key fingerprint. One of these verification methods remains mandatory for either authentication method; insecure host-key checking is not available.
+Do not put the password in command-line arguments or agent-generated input. `SLURM_SSH_KNOWN_HOSTS` must contain a plain hostname entry (or `[host]:port` for a non-default port). Hashed hostnames are not parsed. As an alternative, set `SLURM_SSH_HOST_FINGERPRINT` to a pinned `SHA256:...` host-key fingerprint. One of these verification methods remains mandatory for either authentication method; insecure host-key checking is not available. A separate SFTP endpoint is checked against `SLURM_SFTP_KNOWN_HOSTS` (which defaults to the SSH known-hosts file) or `SLURM_SFTP_HOST_FINGERPRINT`. An SSH fingerprint is inherited only when SSH and SFTP use the same host and port.
 
 Copy [examples/slurm-agent-policy.example.yaml](examples/slurm-agent-policy.example.yaml) to the protected `SLURM_POLICY_PATH` location and adjust its partition, resource limits, and optional aliases. Unknown policy keys fail closed.
 
@@ -162,7 +174,7 @@ Aliases are accepted from the CLI; raw image, virtualenv, GRES, account, QOS, co
 
 Typical shared filesystems include NFS, Lustre, GPFS, and BeeGFS. A directory local only to the login node, such as its private `/tmp`, is not suitable for `SLURM_REMOTE_WORKSPACE` or a non-replicated runtime alias. The CLI can validate remote paths only on the login node before submission, so a missing compute-node mount may not be detected until the job starts.
 
-These paths belong only to the machine running the CLI and do **not** need to be visible on Slurm nodes: `SLURM_LOCAL_JOB_WORKSPACE`, `SLURM_LOCAL_ARTIFACTS`, `SLURM_SSH_KEY_PATH`, `SLURM_SSH_KNOWN_HOSTS`, `SLURM_POLICY_PATH`, and `SLURM_AUDIT_LOG`. `SLURM_SSH_PASSWORD`, when used, likewise belongs only in the trusted CLI runtime environment.
+These paths belong only to the machine running the CLI and do **not** need to be visible on Slurm nodes: `SLURM_LOCAL_JOB_WORKSPACE`, `SLURM_LOCAL_ARTIFACTS`, `SLURM_SSH_KEY_PATH`, `SLURM_SSH_KNOWN_HOSTS`, `SLURM_SFTP_KNOWN_HOSTS`, `SLURM_POLICY_PATH`, and `SLURM_AUDIT_LOG`. `SLURM_SSH_PASSWORD`, when used, likewise belongs only in the trusted CLI runtime environment.
 
 The configured SSH account should also be restricted at the cluster and filesystem layers. The CLI boundary complements, but does not replace, least-privilege Unix and Slurm configuration.
 

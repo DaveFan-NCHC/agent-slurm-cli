@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { AgentError, ExitCode } from "../errors/errors.js";
 
-export interface SshConfig {
+export interface SshConnectionConfig {
   host: string;
   port: number;
   user: string;
@@ -11,10 +11,14 @@ export interface SshConfig {
     | { type: "keyboard-interactive-password"; password: string };
   knownHostsPath?: string;
   hostFingerprint?: string;
-  workspace: string;
-  timeoutMs: number;
   readyTimeoutMs: number;
   pushAuthentication: boolean;
+}
+
+export interface SshConfig extends SshConnectionConfig {
+  workspace: string;
+  timeoutMs: number;
+  sftp?: SshConnectionConfig;
 }
 
 export interface AppConfig {
@@ -40,12 +44,18 @@ function safeRemotePath(value: string, name: string): string {
   return normalized;
 }
 
-export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
-  const portText = env.SLURM_SSH_PORT?.trim() || "22";
-  const port = Number(portText);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    throw new AgentError("CONFIGURATION_ERROR", "SLURM_SSH_PORT must be an integer from 1 to 65535.", ExitCode.General);
+function port(value: string | undefined, fallback: number, name: string): number {
+  const parsed = Number(value?.trim() || String(fallback));
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) {
+    throw new AgentError("CONFIGURATION_ERROR", `${name} must be an integer from 1 to 65535.`, ExitCode.General);
   }
+  return parsed;
+}
+
+export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
+  const host = required(env, "SLURM_SSH_HOST");
+  const sshPort = port(env.SLURM_SSH_PORT, 22, "SLURM_SSH_PORT");
+  const user = required(env, "SLURM_SSH_USER");
   const timeoutText = env.SLURM_COMMAND_TIMEOUT_MS?.trim() || "30000";
   const timeoutMs = Number(timeoutText);
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 600000) {
@@ -104,29 +114,65 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       ExitCode.General,
     );
   }
+  const authentication: SshConnectionConfig["authentication"] = keyPath
+    ? { type: "private-key", keyPath }
+    : passwordMethod === "keyboard-interactive"
+      ? { type: "keyboard-interactive-password", password: password! }
+      : { type: "password", password: password! };
+  const hasSftpConfiguration = [
+    "SLURM_SFTP_HOST",
+    "SLURM_SFTP_PORT",
+    "SLURM_SFTP_USER",
+    "SLURM_SFTP_KNOWN_HOSTS",
+    "SLURM_SFTP_HOST_FINGERPRINT",
+  ].some((name) => Boolean(env[name]?.trim()));
+  let sftp: SshConnectionConfig | undefined;
+  if (hasSftpConfiguration) {
+    const sftpHost = env.SLURM_SFTP_HOST?.trim() || host;
+    const sftpPort = port(env.SLURM_SFTP_PORT, sshPort, "SLURM_SFTP_PORT");
+    const sftpKnownHostsPath = env.SLURM_SFTP_KNOWN_HOSTS?.trim() || knownHostsPath;
+    const explicitSftpFingerprint = env.SLURM_SFTP_HOST_FINGERPRINT?.trim();
+    const sameEndpoint = sftpHost === host && sftpPort === sshPort;
+    const sftpHostFingerprint = explicitSftpFingerprint || (sameEndpoint ? hostFingerprint : undefined);
+    if (!sftpKnownHostsPath && !sftpHostFingerprint) {
+      throw new AgentError(
+        "CONFIGURATION_ERROR",
+        "A separately configured SFTP endpoint requires SLURM_SFTP_KNOWN_HOSTS or SLURM_SFTP_HOST_FINGERPRINT; SLURM_SSH_KNOWN_HOSTS may also contain its host key.",
+        ExitCode.General,
+      );
+    }
+    sftp = {
+      host: sftpHost,
+      port: sftpPort,
+      user: env.SLURM_SFTP_USER?.trim() || user,
+      authentication,
+      knownHostsPath: sftpKnownHostsPath,
+      hostFingerprint: sftpHostFingerprint,
+      readyTimeoutMs,
+      pushAuthentication,
+    };
+  }
   try {
     if (keyPath) readFileSync(keyPath);
     if (knownHostsPath) readFileSync(knownHostsPath);
+    if (sftp?.knownHostsPath && sftp.knownHostsPath !== knownHostsPath) readFileSync(sftp.knownHostsPath);
   } catch (cause) {
-    throw new AgentError("CONFIGURATION_ERROR", `SSH key or known_hosts file is not readable: ${(cause as Error).message}`, ExitCode.General);
+    throw new AgentError("CONFIGURATION_ERROR", `SSH/SFTP key or known_hosts file is not readable: ${(cause as Error).message}`, ExitCode.General);
   }
   const workspace = safeRemotePath(required(env, "SLURM_REMOTE_WORKSPACE"), "SLURM_REMOTE_WORKSPACE");
   return {
     ssh: {
-      host: required(env, "SLURM_SSH_HOST"),
-      port,
-      user: required(env, "SLURM_SSH_USER"),
-      authentication: keyPath
-        ? { type: "private-key", keyPath }
-        : passwordMethod === "keyboard-interactive"
-          ? { type: "keyboard-interactive-password", password: password! }
-          : { type: "password", password: password! },
+      host,
+      port: sshPort,
+      user,
+      authentication,
       knownHostsPath,
       hostFingerprint,
       workspace,
       timeoutMs,
       readyTimeoutMs,
       pushAuthentication,
+      sftp,
     },
     policyPath: env.SLURM_POLICY_PATH?.trim() || "./slurm-agent-policy.yaml",
     auditLogPath: env.SLURM_AUDIT_LOG?.trim() || undefined,

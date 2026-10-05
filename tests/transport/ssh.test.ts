@@ -3,6 +3,7 @@ import type { ConnectConfig } from "ssh2";
 
 const captured = vi.hoisted(() => ({
   connection: undefined as ConnectConfig | undefined,
+  connections: [] as ConnectConfig[],
   authMethods: [] as string[],
   interactivePromptCount: 0,
   interactivePromptEcho: false,
@@ -12,6 +13,7 @@ const captured = vi.hoisted(() => ({
 
 vi.mock("ssh2", async () => {
   const { EventEmitter } = await import("node:events");
+  const { Writable } = await import("node:stream");
   class MockChannel extends EventEmitter {
     readonly stderr = new EventEmitter();
     close(): void {}
@@ -20,6 +22,7 @@ vi.mock("ssh2", async () => {
   class MockClient extends EventEmitter {
     connect(connection: ConnectConfig): this {
       captured.connection = connection;
+      captured.connections.push(connection);
       if (typeof connection.authHandler !== "function") {
         queueMicrotask(() => this.emit("ready"));
         return this;
@@ -73,6 +76,24 @@ vi.mock("ssh2", async () => {
       queueMicrotask(() => channel.emit("close", 0, undefined));
     }
 
+    sftp(callback: (error: undefined, sftp: {
+      createWriteStream: () => InstanceType<typeof Writable>;
+      rename: (from: string, to: string, done: (error?: Error) => void) => void;
+      unlink: (path: string, done: (error?: Error) => void) => void;
+      end: () => void;
+    }) => void): void {
+      callback(undefined, {
+        createWriteStream: () => {
+          const stream = new Writable({ write(_chunk, _encoding, done) { done(); } });
+          queueMicrotask(() => stream.emit("open"));
+          return stream;
+        },
+        rename: (_from, _to, done) => done(),
+        unlink: (_path, done) => done(),
+        end: () => {},
+      });
+    }
+
     end(): void { this.emit("close"); }
   }
 
@@ -84,11 +105,42 @@ import { SshExecutor } from "../../src/transport/ssh.js";
 describe("SSH authentication", () => {
   beforeEach(() => {
     captured.connection = undefined;
+    captured.connections = [];
     captured.authMethods = [];
     captured.interactivePromptCount = 0;
     captured.interactivePromptEcho = false;
     captured.replies = [];
     captured.completeAfterPrimary = false;
+  });
+
+  it("uses a separate configured connection for SFTP transfers", async () => {
+    const common = {
+      user: "alice",
+      authentication: { type: "password" as const, password: "test password" },
+      hostFingerprint: "SHA256:test",
+      readyTimeoutMs: 30000,
+      pushAuthentication: false,
+    };
+    const executor = new SshExecutor({
+      ...common,
+      host: "login.example",
+      port: 22,
+      workspace: "/work",
+      timeoutMs: 30000,
+      sftp: { ...common, host: "transfer.example", port: 2222 },
+    });
+
+    await executor.run({ executable: "squeue", args: [] });
+    await executor.uploadSubmission({
+      content: Buffer.from("#!/bin/sh\n"),
+      remotePath: "/work/.slurm-agent/submissions/test/payload",
+      maxBytes: 1024,
+    });
+
+    expect(captured.connections).toHaveLength(2);
+    expect(captured.connections[0]).toMatchObject({ host: "login.example", port: 22 });
+    expect(captured.connections[1]).toMatchObject({ host: "transfer.example", port: 2222 });
+    await executor.close();
   });
 
   it("passes only the configured password to ssh2", async () => {

@@ -4,7 +4,7 @@ import { createWriteStream, linkSync, readFileSync, unlinkSync } from "node:fs";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { Client, type ConnectConfig, type ClientChannel, type SFTPWrapper } from "ssh2";
-import type { SshConfig } from "../config/loader.js";
+import type { SshConfig, SshConnectionConfig } from "../config/loader.js";
 import { AgentError, ExitCode } from "../errors/errors.js";
 import { renderCommand, type RemoteExecutor, type RemoteResult, type SafeArtifactTransfer, type SafeCommand, type SafeSubmissionUpload } from "./types.js";
 
@@ -32,7 +32,7 @@ function constantEqual(left: Buffer, right: Buffer): boolean {
   return left.length === right.length && timingSafeEqual(left, right);
 }
 
-function makeHostVerifier(config: SshConfig): (key: Buffer) => boolean {
+function makeHostVerifier(config: SshConnectionConfig): (key: Buffer) => boolean {
   if (config.hostFingerprint) {
     const expected = normalizeFingerprint(config.hostFingerprint);
     return (key) => createHash("sha256").update(key).digest("base64").replace(/=+$/, "") === expected;
@@ -60,15 +60,18 @@ function appendLimited(chunks: Buffer[], chunk: Buffer, state: { size: number; t
 }
 
 export class SshExecutor implements RemoteExecutor {
-  private client?: Client;
-  private connecting?: Promise<Client>;
+  private readonly commandConnection: { client?: Client; connecting?: Promise<Client> } = {};
+  private readonly transferConnection: { client?: Client; connecting?: Promise<Client> } = {};
 
   constructor(private readonly config: SshConfig) {}
 
-  private connect(): Promise<Client> {
-    if (this.client) return Promise.resolve(this.client);
-    if (this.connecting) return this.connecting;
-    this.connecting = new Promise<Client>((resolve, reject) => {
+  private connect(
+    config: SshConnectionConfig,
+    state: { client?: Client; connecting?: Promise<Client> },
+  ): Promise<Client> {
+    if (state.client) return Promise.resolve(state.client);
+    if (state.connecting) return state.connecting;
+    state.connecting = new Promise<Client>((resolve, reject) => {
       const client = new Client();
       let hostVerified = false;
       let verifierCalled = false;
@@ -77,16 +80,16 @@ export class SshExecutor implements RemoteExecutor {
       let pushAttempted = false;
       let passwordPromptAnswered = false;
       let verifier: (key: Buffer) => boolean;
-      try { verifier = makeHostVerifier(this.config); } catch (error) { reject(error); return; }
+      try { verifier = makeHostVerifier(config); } catch (error) { reject(error); return; }
       const finishReject = (error: AgentError): void => {
         if (settled) return;
         settled = true;
-        this.connecting = undefined;
+        state.connecting = undefined;
         client.end();
         reject(error);
       };
       client.once("ready", () => {
-        if (this.config.authentication.type === "keyboard-interactive-password" && !passwordPromptAnswered) {
+        if (config.authentication.type === "keyboard-interactive-password" && !passwordPromptAnswered) {
           finishReject(new AgentError(
             "SSH_AUTH_FAILED",
             "SSH keyboard-interactive authentication completed without the required password prompt.",
@@ -94,9 +97,9 @@ export class SshExecutor implements RemoteExecutor {
           ));
           return;
         }
-        const combinedPamPushCompleted = this.config.authentication.type === "keyboard-interactive-password"
+        const combinedPamPushCompleted = config.authentication.type === "keyboard-interactive-password"
           && passwordPromptAnswered;
-        if (this.config.pushAuthentication && !pushAttempted && !combinedPamPushCompleted) {
+        if (config.pushAuthentication && !pushAttempted && !combinedPamPushCompleted) {
           finishReject(new AgentError(
             "SSH_AUTH_FAILED",
             "SSH authentication completed without the required push approval.",
@@ -105,11 +108,11 @@ export class SshExecutor implements RemoteExecutor {
           return;
         }
         settled = true;
-        this.client = client;
+        state.client = client;
         resolve(client);
       });
       client.once("error", (cause: Error & { level?: string }) => {
-        if (this.config.pushAuthentication && cause.level === "client-timeout") {
+        if (config.pushAuthentication && cause.level === "client-timeout") {
           finishReject(new AgentError(
             "SSH_AUTH_FAILED",
             "SSH push approval timed out or was not completed.",
@@ -121,13 +124,13 @@ export class SshExecutor implements RemoteExecutor {
         const code = verifierCalled && !hostVerified ? "SSH_HOST_VERIFICATION_FAILED" : auth ? "SSH_AUTH_FAILED" : "SSH_CONNECTION_FAILED";
         finishReject(new AgentError(code, `SSH connection failed: ${cause.message}`, ExitCode.SshFailure));
       });
-      client.once("close", () => { this.client = undefined; this.connecting = undefined; });
-      if (this.config.pushAuthentication || this.config.authentication.type === "keyboard-interactive-password") {
+      client.once("close", () => { state.client = undefined; state.connecting = undefined; });
+      if (config.pushAuthentication || config.authentication.type === "keyboard-interactive-password") {
         client.on("keyboard-interactive", (_name, _instructions, _lang, prompts, finish) => {
-          if (this.config.authentication.type === "keyboard-interactive-password"
+          if (config.authentication.type === "keyboard-interactive-password"
               && !passwordPromptAnswered && prompts.length === 1 && prompts[0]?.echo === false) {
             passwordPromptAnswered = true;
-            finish([this.config.authentication.password]);
+            finish([config.authentication.password]);
             return;
           }
           finishReject(new AgentError(
@@ -138,16 +141,16 @@ export class SshExecutor implements RemoteExecutor {
         });
       }
       const authentication: Pick<ConnectConfig, "privateKey" | "password"> =
-        this.config.authentication.type === "private-key"
-          ? { privateKey: readFileSync(this.config.authentication.keyPath) }
-          : this.config.authentication.type === "password"
-            ? { password: this.config.authentication.password }
+        config.authentication.type === "private-key"
+          ? { privateKey: readFileSync(config.authentication.keyPath) }
+          : config.authentication.type === "password"
+            ? { password: config.authentication.password }
             : {};
-      const primaryMethod = this.config.authentication.type === "private-key"
+      const primaryMethod = config.authentication.type === "private-key"
         ? "publickey"
-        : this.config.authentication.type === "password" ? "password" : "keyboard-interactive";
-      const explicitAuthentication = this.config.pushAuthentication
-        || this.config.authentication.type === "keyboard-interactive-password";
+        : config.authentication.type === "password" ? "password" : "keyboard-interactive";
+      const explicitAuthentication = config.pushAuthentication
+        || config.authentication.type === "keyboard-interactive-password";
       const authHandler: ConnectConfig["authHandler"] = explicitAuthentication
         ? (methodsLeft, partialSuccess, next) => {
             if (!primaryAttempted) {
@@ -164,24 +167,34 @@ export class SshExecutor implements RemoteExecutor {
           }
         : undefined;
       const connection: ConnectConfig = {
-        host: this.config.host,
-        port: this.config.port,
-        username: this.config.user,
+        host: config.host,
+        port: config.port,
+        username: config.user,
         ...authentication,
         tryKeyboard: explicitAuthentication,
         ...(authHandler ? { authHandler } : {}),
-        readyTimeout: this.config.readyTimeoutMs,
+        readyTimeout: config.readyTimeoutMs,
         hostVerifier: (key: Buffer) => { verifierCalled = true; hostVerified = verifier(key); return hostVerified; },
         keepaliveInterval: 10000,
         keepaliveCountMax: 3,
       };
       client.connect(connection);
     });
-    return this.connecting;
+    return state.connecting;
+  }
+
+  private connectForCommands(): Promise<Client> {
+    return this.connect(this.config, this.commandConnection);
+  }
+
+  private connectForTransfer(): Promise<Client> {
+    return this.config.sftp
+      ? this.connect(this.config.sftp, this.transferConnection)
+      : this.connectForCommands();
   }
 
   async run(command: SafeCommand): Promise<RemoteResult> {
-    const client = await this.connect();
+    const client = await this.connectForCommands();
     const rendered = renderCommand(command);
     const limit = command.maxOutputBytes ?? 4 * 1024 * 1024;
     return await new Promise<RemoteResult>((resolve, reject) => {
@@ -231,7 +244,7 @@ export class SshExecutor implements RemoteExecutor {
   }
 
   async downloadArtifact({ remotePath, localPath, maxBytes }: SafeArtifactTransfer): Promise<{ bytes: number }> {
-    const client = await this.connect();
+    const client = await this.connectForTransfer();
     const sftp = await new Promise<SFTPWrapper>((resolve, reject) => {
       client.sftp((error, session) => {
         if (error) reject(new AgentError("ARTIFACT_DOWNLOAD_FAILED", `Unable to start controlled artifact transfer: ${error.message}`, ExitCode.SshFailure));
@@ -299,7 +312,7 @@ export class SshExecutor implements RemoteExecutor {
     if (content.length > maxBytes) {
       throw new AgentError("SCRIPT_TOO_LARGE", `Job script exceeds policy maximum ${maxBytes} bytes.`, ExitCode.PolicyDenied);
     }
-    const client = await this.connect();
+    const client = await this.connectForTransfer();
     const sftp = await new Promise<SFTPWrapper>((resolve, reject) => {
       client.sftp((error, session) => {
         if (error) reject(new AgentError("SCRIPT_UPLOAD_FAILED", `Unable to start controlled script upload: ${error.message}`, ExitCode.SshFailure));
@@ -341,8 +354,11 @@ export class SshExecutor implements RemoteExecutor {
   }
 
   async close(): Promise<void> {
-    this.client?.end();
-    this.client = undefined;
-    this.connecting = undefined;
+    this.commandConnection.client?.end();
+    this.transferConnection.client?.end();
+    this.commandConnection.client = undefined;
+    this.commandConnection.connecting = undefined;
+    this.transferConnection.client = undefined;
+    this.transferConnection.connecting = undefined;
   }
 }
