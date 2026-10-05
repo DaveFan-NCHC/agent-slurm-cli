@@ -3,6 +3,7 @@ import { TRUSTED_RUNNER } from "../../src/slurm/runner.js";
 
 describe("trusted submission runner", () => {
   it("isolates Apptainer jobs and exposes only the per-job artifact directory", () => {
+    expect(TRUSTED_RUNNER).toContain("--nv");
     expect(TRUSTED_RUNNER).toContain("--containall");
     expect(TRUSTED_RUNNER).toContain("--cleanenv");
     expect(TRUSTED_RUNNER).toContain('${SLURM_AGENT_WORKSPACE}:/workspace:ro');

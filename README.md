@@ -168,7 +168,7 @@ Aliases are accepted from the CLI; raw image, virtualenv, GRES, account, QOS, co
 | Path | Required visibility | Reason |
 |---|---|---|
 | `SLURM_REMOTE_WORKSPACE` | Must be a shared filesystem mounted at the same absolute path on the login node and every eligible compute node | It contains `.slurm-agent/submissions`, logs, and artifacts. Compute nodes read the staged payload and write logs/artifacts; the login node later reads or downloads them. |
-| `allowed_apptainer_images.*` | Must resolve to the same image at the same absolute path on the login node and every eligible compute node | The login node validates the image, while the compute node executes it. A shared filesystem is recommended; an identically replicated image also works. |
+| `allowed_apptainer_images.*` | Must resolve to the same image at the same absolute path on the login node and every eligible compute node | The login node validates the image, while the compute node executes it with NVIDIA GPU support (`--nv`). A shared filesystem is recommended; an identically replicated image also works. |
 | `allowed_virtualenvs.*` | Must resolve to the same environment at the same absolute path on the login node and every eligible compute node | The login node validates `bin/python`, while the compute node runs the environment. A shared filesystem is recommended; an identical installation on every node also works. |
 | `SLURM_REMOTE_APPTAINER_PATH` | Must be executable at the same absolute path on the login node and every eligible compute node | It may be installed locally on each node and does not itself need to be on shared storage. |
 

@@ -20,6 +20,7 @@ case "\${SLURM_AGENT_RUNTIME_KIND}" in
     : "\${SLURM_AGENT_SUBMISSION_DIR:?}"
     : "\${SLURM_AGENT_WORKSPACE:?}"
     exec "\${SLURM_AGENT_APPTAINER_EXECUTABLE}" exec \
+      --nv \
       --containall \
       --cleanenv \
       --bind "\${SLURM_AGENT_SUBMISSION_DIR}:/slurm-agent/submission:ro" \
