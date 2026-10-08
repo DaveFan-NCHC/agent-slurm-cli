@@ -50,6 +50,10 @@ allowed_qos:
   standard: normal
 allowed_constraints:
   modern-cpu: '[zen3|zen4]'
+allowed_nodelists:
+  gpu-a: 'gpu[01-02]'
+allowed_exclude_nodelists:
+  maintenance: 'gpu[03,07-09]'
 allowed_reservations:
   workshop: workshop2026
 max_script_bytes: 65536

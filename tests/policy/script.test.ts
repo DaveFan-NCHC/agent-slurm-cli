@@ -16,7 +16,8 @@ const policy: Policy = {
   maxArtifactBytes: 1024, maxArtifactFiles: 10, allowedSignals: [],
   allowedApptainerImages: {}, allowedVirtualenvs: {},
   allowedGres: {},
-  allowedAccounts: {}, allowedQos: {}, allowedConstraints: {}, allowedReservations: {},
+  allowedAccounts: {}, allowedQos: {}, allowedConstraints: {}, allowedNodelists: {},
+  allowedExcludeNodelists: {}, allowedReservations: {},
   maxScriptBytes: 128, maxScriptArgs: 4, maxScriptArgLength: 32,
   requireApptainerForGeneratedScripts: false,
 };

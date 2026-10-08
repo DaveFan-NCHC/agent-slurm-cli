@@ -45,6 +45,8 @@ allowed_gres: {}
 allowed_accounts: {}
 allowed_qos: {}
 allowed_constraints: {}
+allowed_nodelists: {}
+allowed_exclude_nodelists: {}
 allowed_reservations: {}
 max_script_bytes: 65536
 max_script_args: 32

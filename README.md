@@ -140,6 +140,10 @@ allowed_qos:
   standard: normal
 allowed_constraints:
   modern-cpu: '[zen3|zen4]'
+allowed_nodelists:
+  gpu-a: 'gpu[01-02]'
+allowed_exclude_nodelists:
+  maintenance: 'gpu[03,07-09]'
 allowed_reservations:
   workshop: workshop2026
 max_wait_seconds: 86400
@@ -159,7 +163,7 @@ require_apptainer_for_generated_scripts: true
 
 Arrays, dependencies, MPI rank placement, per-node/per-task GPUs, exclusive nodes, and signals are opt-in for upgrades. Their limits, boolean, or allowlists default to disabled when omitted. Set bounded values explicitly to enable only the capabilities wanted by the operator.
 
-Aliases are accepted from the CLI; raw image, virtualenv, GRES, account, QOS, constraint, and reservation values are not. `max_gpus: 0` disables direct `--gpus` requests. Omitting one of the scheduler alias mappings disables that submit option.
+Aliases are accepted from the CLI; raw image, virtualenv, GRES, account, QOS, constraint, included/excluded node-list, and reservation values are not. `max_gpus: 0` disables direct `--gpus` requests. Omitting one of the scheduler alias mappings disables that submit option.
 
 ### Cluster path visibility
 
@@ -225,14 +229,19 @@ slurm-agent submit -p slurm-test --gres a100x1 --apptainer-image pytorch jobs/tr
 
 Per-node and per-task requests are checked both against their own policy caps and the total `max_gpus`. `--exclusive` is accepted only when `allow_exclusive: true`; combine it with bounded per-node `--mem`, not `--mem-per-cpu`, because Slurm may allocate memory for every usable CPU on an exclusive node.
 
-Select operator-approved account, QOS, node constraints, or reservations with policy aliases:
+Select operator-approved account, QOS, node constraints, included/excluded node lists, or reservations with policy aliases:
 
 ```bash
 slurm-agent submit -p slurm-test \
   --account research --qos standard \
-  --constraint modern-cpu --reservation workshop \
+  --constraint modern-cpu --nodelist gpu-a --exclude maintenance \
+  --reservation workshop \
   --apptainer-image pytorch jobs/train.sh
 ```
+
+`--nodelist` (short form `-w`) maps an alias through `allowed_nodelists` before passing the resulting hostlist to `sbatch`. For example, `gpu-a: 'gpu[01-02]'` permits that controlled hostlist while rejecting raw node names and unknown aliases.
+
+`--exclude` (short form `-x`) similarly maps an alias through `allowed_exclude_nodelists` before passing the controlled exclusion hostlist to `sbatch`.
 
 `--gres` never accepts a raw Slurm GRES expression. The CLI maps the alias through `allowed_gres` before constructing `sbatch`.
 

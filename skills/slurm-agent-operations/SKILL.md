@@ -91,13 +91,13 @@ slurm-agent submit ... --dependency afterok:12345:12346,afternotok:12347
 
 Do not invent or broaden dependency references. OR conditions, offsets, cross-user jobs, disallowed types, and reference counts above policy are unavailable. Use `aftercorr` only for a new array submission, and use `singleton` only with an explicit `--job-name`.
 
-Use only policy-defined aliases for scheduler-specific account, QOS, node constraint, and reservation selection:
+Use only policy-defined aliases for scheduler-specific account, QOS, node constraint, included/excluded node-list, and reservation selection:
 
 ```bash
-slurm-agent submit ... --account research --qos standard --constraint modern-cpu --reservation workshop
+slurm-agent submit ... --account research --qos standard --constraint modern-cpu --nodelist gpu-a --exclude maintenance --reservation workshop
 ```
 
-Never pass raw scheduler values; the CLI resolves aliases through `allowed_accounts`, `allowed_qos`, `allowed_constraints`, and `allowed_reservations`.
+Never pass raw scheduler values; the CLI resolves aliases through `allowed_accounts`, `allowed_qos`, `allowed_constraints`, `allowed_nodelists`, `allowed_exclude_nodelists`, and `allowed_reservations`.
 
 Request GPUs with at most one of these policy-controlled forms:
 

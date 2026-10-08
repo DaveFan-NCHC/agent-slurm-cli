@@ -339,6 +339,8 @@ export class SlurmClient {
     if (options.accountValue !== undefined) args.push(`--account=${options.accountValue}`);
     if (options.qosValue !== undefined) args.push(`--qos=${options.qosValue}`);
     if (options.constraintValue !== undefined) args.push(`--constraint=${options.constraintValue}`);
+    if (options.nodelistValue !== undefined) args.push(`--nodelist=${options.nodelistValue}`);
+    if (options.excludeValue !== undefined) args.push(`--exclude=${options.excludeValue}`);
     if (options.reservationValue !== undefined) args.push(`--reservation=${options.reservationValue}`);
     if (options.exclusive) args.push("--exclusive");
     if (options.array !== undefined) args.push(`--array=${options.array}`);

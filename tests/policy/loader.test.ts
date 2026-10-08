@@ -49,6 +49,8 @@ allowed_virtualenvs:
       expect(policy.allowedAccounts).toEqual({});
       expect(policy.allowedQos).toEqual({});
       expect(policy.allowedConstraints).toEqual({});
+      expect(policy.allowedNodelists).toEqual({});
+      expect(policy.allowedExcludeNodelists).toEqual({});
       expect(policy.allowedReservations).toEqual({});
     } finally { fixture.cleanup(); }
   });
@@ -61,6 +63,10 @@ allowed_qos:
   standard: normal
 allowed_constraints:
   modern: '[zen3|zen4]'
+allowed_nodelists:
+  gpu-a: 'gpu[01-02]'
+allowed_exclude_nodelists:
+  maintenance: 'gpu[03,07-09]'
 allowed_reservations:
   workshop: ws2026
 `);
@@ -69,6 +75,8 @@ allowed_reservations:
       expect(policy.allowedAccounts.research).toBe("proj123");
       expect(policy.allowedQos.standard).toBe("normal");
       expect(policy.allowedConstraints.modern).toBe("[zen3|zen4]");
+      expect(policy.allowedNodelists["gpu-a"]).toBe("gpu[01-02]");
+      expect(policy.allowedExcludeNodelists.maintenance).toBe("gpu[03,07-09]");
       expect(policy.allowedReservations.workshop).toBe("ws2026");
     } finally { fixture.cleanup(); }
   });
@@ -78,6 +86,8 @@ allowed_reservations:
     ["allowed_qos", "normal,high"],
     ["allowed_reservations", "ws$(id)"],
     ["allowed_constraints", "gpu;id"],
+    ["allowed_nodelists", "gpu[01];id"],
+    ["allowed_exclude_nodelists", "gpu[01]$(id)"],
   ])("rejects unsafe controlled alias values in %s", (key, value) => {
     const fixture = policyFile(`${base}\n${key}:\n  unsafe: '${value}'\n`);
     try { expect(() => loadPolicy(fixture.path)).toThrow(); }

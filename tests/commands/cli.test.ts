@@ -119,6 +119,10 @@ allowed_qos:
   standard: normal
 allowed_constraints:
   modern: '[zen3|zen4]'
+allowed_nodelists:
+  gpu-a: 'gpu[01-02]'
+allowed_exclude_nodelists:
+  maintenance: 'gpu[03,07-09]'
 allowed_reservations:
   workshop: ws2026
 require_apptainer_for_generated_scripts: false
@@ -128,7 +132,8 @@ require_apptainer_for_generated_scripts: false
       const code = await main(
         ["submit", "-p", "p", "-N", "1", "-n", "1", "--ntasks-per-node", "1", "-c", "1",
           "--mem-per-cpu", "1G", "--gpus-per-node", "1",
-          "-A", "research", "--qos", "standard", "-C", "modern", "--reservation", "workshop",
+          "-A", "research", "--qos", "standard", "-C", "modern", "-w", "gpu-a",
+          "-x", "maintenance", "--reservation", "workshop",
           "--array", "0-3%2", "-t", "00:10:00", "jobs/train.sh", "--epochs", "2"],
         {
           SLURM_SSH_HOST: "host", SLURM_SSH_USER: "alice", SLURM_SSH_KEY_PATH: join(root, "key"),
@@ -151,6 +156,8 @@ require_apptainer_for_generated_scripts: false
       expect(remote.commands.at(-1)?.args).toContain("--account=proj123");
       expect(remote.commands.at(-1)?.args).toContain("--qos=normal");
       expect(remote.commands.at(-1)?.args).toContain("--constraint=[zen3|zen4]");
+      expect(remote.commands.at(-1)?.args).toContain("--nodelist=gpu[01-02]");
+      expect(remote.commands.at(-1)?.args).toContain("--exclude=gpu[03,07-09]");
       expect(remote.commands.at(-1)?.args).toContain("--reservation=ws2026");
       expect(remote.commands.at(-1)?.args).toContain("--output=/work/.slurm-agent/logs/%A_%a.out");
       expect(remote.uploads).toHaveLength(2);

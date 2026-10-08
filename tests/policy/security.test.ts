@@ -22,7 +22,9 @@ const policy: Policy = {
   allowedVirtualenvs: { "project-a": "/opt/venvs/project-a" },
   allowedGres: { a100x1: "gpu:a100:1" },
   allowedAccounts: { research: "proj123" }, allowedQos: { normal: "normal" },
-  allowedConstraints: { modern: "[zen3|zen4]" }, allowedReservations: { workshop: "ws2026" },
+  allowedConstraints: { modern: "[zen3|zen4]" }, allowedNodelists: { "gpu-a": "gpu[01-02]" },
+  allowedExcludeNodelists: { maintenance: "gpu[03,07-09]" },
+  allowedReservations: { workshop: "ws2026" },
   maxScriptBytes: 65536, maxScriptArgs: 32, maxScriptArgLength: 1024,
   requireApptainerForGeneratedScripts: false,
 };
@@ -96,17 +98,21 @@ describe("resource policy", () => {
     expect(validateSubmit({ ...valid, nodes: 2, gpusPerNode: 2 }, policy).gpusPerNode).toBe(2);
     expect(validateSubmit({ ...valid, ntasks: 4, gpusPerTask: 1 }, policy).gpusPerTask).toBe(1);
   });
-  it("resolves controlled account, QOS, constraint, and reservation aliases", () => {
+  it("resolves controlled scheduler aliases", () => {
     expect(validateSubmit({
-      ...valid, account: "research", qos: "normal", constraint: "modern", reservation: "workshop",
+      ...valid, account: "research", qos: "normal", constraint: "modern", nodelist: "gpu-a",
+      exclude: "maintenance", reservation: "workshop",
     }, policy)).toMatchObject({
-      accountValue: "proj123", qosValue: "normal", constraintValue: "[zen3|zen4]", reservationValue: "ws2026",
+      accountValue: "proj123", qosValue: "normal", constraintValue: "[zen3|zen4]",
+      nodelistValue: "gpu[01-02]", excludeValue: "gpu[03,07-09]", reservationValue: "ws2026",
     });
   });
   it.each([
     ["account", "ACCOUNT_ALIAS_NOT_ALLOWED"],
     ["qos", "QOS_ALIAS_NOT_ALLOWED"],
     ["constraint", "CONSTRAINT_ALIAS_NOT_ALLOWED"],
+    ["nodelist", "NODELIST_ALIAS_NOT_ALLOWED"],
+    ["exclude", "EXCLUDE_NODELIST_ALIAS_NOT_ALLOWED"],
     ["reservation", "RESERVATION_ALIAS_NOT_ALLOWED"],
   ] as const)("rejects an unknown %s alias", (field, code) => {
     expect(() => validateSubmit({ ...valid, [field]: "unknown" }, policy)).toThrowError(

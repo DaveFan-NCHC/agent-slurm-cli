@@ -28,6 +28,8 @@ export interface Policy {
   allowedAccounts: Record<string, string>;
   allowedQos: Record<string, string>;
   allowedConstraints: Record<string, string>;
+  allowedNodelists: Record<string, string>;
+  allowedExcludeNodelists: Record<string, string>;
   allowedReservations: Record<string, string>;
   maxScriptBytes: number;
   maxScriptArgs: number;

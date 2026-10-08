@@ -18,6 +18,8 @@ export interface SubmitOptions {
   account?: string;
   qos?: string;
   constraint?: string;
+  nodelist?: string;
+  exclude?: string;
   reservation?: string;
   array?: string;
   dependency?: string;
@@ -37,6 +39,8 @@ export interface NormalizedSubmit extends SubmitOptions {
   accountValue?: string;
   qosValue?: string;
   constraintValue?: string;
+  nodelistValue?: string;
+  excludeValue?: string;
   reservationValue?: string;
   arrayTaskCount?: number;
   arrayConcurrency?: number;
@@ -83,7 +87,8 @@ function resolvePolicyAlias(
   alias: string | undefined,
   allowed: Record<string, string>,
   label: string,
-  code: "ACCOUNT_ALIAS_NOT_ALLOWED" | "QOS_ALIAS_NOT_ALLOWED" | "CONSTRAINT_ALIAS_NOT_ALLOWED" | "RESERVATION_ALIAS_NOT_ALLOWED",
+  code: "ACCOUNT_ALIAS_NOT_ALLOWED" | "QOS_ALIAS_NOT_ALLOWED" | "CONSTRAINT_ALIAS_NOT_ALLOWED" |
+    "NODELIST_ALIAS_NOT_ALLOWED" | "EXCLUDE_NODELIST_ALIAS_NOT_ALLOWED" | "RESERVATION_ALIAS_NOT_ALLOWED",
 ): string | undefined {
   if (alias === undefined) return undefined;
   if (!runtimeAliasPattern.test(alias)) throw invalid(`${label} must be a safe logical alias.`);
@@ -263,6 +268,12 @@ export function validateSubmit(options: SubmitOptions, policy: Policy): Normaliz
   const constraintValue = resolvePolicyAlias(
     options.constraint, policy.allowedConstraints, "Constraint", "CONSTRAINT_ALIAS_NOT_ALLOWED",
   );
+  const nodelistValue = resolvePolicyAlias(
+    options.nodelist, policy.allowedNodelists, "Node list", "NODELIST_ALIAS_NOT_ALLOWED",
+  );
+  const excludeValue = resolvePolicyAlias(
+    options.exclude, policy.allowedExcludeNodelists, "Excluded node list", "EXCLUDE_NODELIST_ALIAS_NOT_ALLOWED",
+  );
   const reservationValue = resolvePolicyAlias(
     options.reservation, policy.allowedReservations, "Reservation", "RESERVATION_ALIAS_NOT_ALLOWED",
   );
@@ -370,7 +381,7 @@ export function validateSubmit(options: SubmitOptions, policy: Policy): Normaliz
   }
   return {
     ...options, memoryGb, timeMinutes, apptainerImagePath, venvPath, gresValue,
-    accountValue, qosValue, constraintValue, reservationValue,
+    accountValue, qosValue, constraintValue, nodelistValue, excludeValue, reservationValue,
     arrayTaskCount: array.taskCount, arrayConcurrency: array.concurrency,
     dependencyJobIds: dependency.jobIds,
   };

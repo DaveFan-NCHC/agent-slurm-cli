@@ -12,7 +12,8 @@ const keys = [
   "max_array_tasks", "max_array_concurrency", "max_dependency_jobs", "allowed_dependency_types",
   "max_artifact_bytes", "max_artifact_files", "allowed_signals",
   "allowed_apptainer_images", "allowed_virtualenvs", "allowed_gres",
-  "allowed_accounts", "allowed_qos", "allowed_constraints", "allowed_reservations",
+  "allowed_accounts", "allowed_qos", "allowed_constraints", "allowed_nodelists",
+  "allowed_exclude_nodelists", "allowed_reservations",
   "max_script_bytes", "max_script_args", "max_script_arg_length",
   "require_apptainer_for_generated_scripts",
 ] as const;
@@ -113,6 +114,25 @@ function constraintMap(value: unknown, key: string): Record<string, string> {
   return result;
 }
 
+function nodelistMap(value: unknown, key: string): Record<string, string> {
+  if (value === undefined) return {};
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new AgentError("CONFIGURATION_ERROR", `${key} must be a mapping of aliases to Slurm node lists.`, ExitCode.General);
+  }
+  const result: Record<string, string> = {};
+  for (const [alias, nodelist] of Object.entries(value as Record<string, unknown>)) {
+    if (!aliasPattern.test(alias)) {
+      throw new AgentError("CONFIGURATION_ERROR", `${key} contains an invalid alias.`, ExitCode.General);
+    }
+    if (typeof nodelist !== "string" || nodelist.length > 256 ||
+        !/^[A-Za-z0-9][A-Za-z0-9_.\[\],-]*$/.test(nodelist)) {
+      throw new AgentError("CONFIGURATION_ERROR", `${key}.${alias} must be a safe Slurm node list.`, ExitCode.General);
+    }
+    result[alias] = nodelist;
+  }
+  return result;
+}
+
 function booleanValue(value: unknown, key: string, defaultValue: boolean): boolean {
   const resolved = value ?? defaultValue;
   if (typeof resolved !== "boolean") {
@@ -201,6 +221,8 @@ export function loadPolicy(path: string): Policy {
     allowedAccounts: identifierMap(data.allowed_accounts, "allowed_accounts"),
     allowedQos: identifierMap(data.allowed_qos, "allowed_qos"),
     allowedConstraints: constraintMap(data.allowed_constraints, "allowed_constraints"),
+    allowedNodelists: nodelistMap(data.allowed_nodelists, "allowed_nodelists"),
+    allowedExcludeNodelists: nodelistMap(data.allowed_exclude_nodelists, "allowed_exclude_nodelists"),
     allowedReservations: identifierMap(data.allowed_reservations, "allowed_reservations"),
     maxScriptBytes: positive(data.max_script_bytes, "max_script_bytes", 65536),
     maxScriptArgs: positive(data.max_script_args, "max_script_args", 32),

@@ -68,6 +68,8 @@ Submit options:
   -A, --account ALIAS   policy-defined Slurm account
   -q, --qos ALIAS       policy-defined quality of service
   -C, --constraint ALIAS policy-defined node constraint
+  -w, --nodelist ALIAS  policy-defined node list
+  -x, --exclude ALIAS   policy-defined excluded node list
   --reservation ALIAS   policy-defined reservation
   --exclusive           request policy-approved exclusive nodes
   --array SPEC          array indexes/ranges with optional % concurrency
@@ -93,7 +95,7 @@ function parseArgs(argv: string[]): Parsed {
   let positionalMode = false;
   const shortOptions: Record<string, string> = {
     "-p": "partition", "-N": "nodes", "-n": "ntasks", "-c": "cpus-per-task", "-t": "time", "-J": "job-name",
-    "-A": "account", "-q": "qos", "-C": "constraint",
+    "-A": "account", "-q": "qos", "-C": "constraint", "-w": "nodelist", "-x": "exclude",
   };
   for (let index = 1; index < argv.length; index += 1) {
     const token = argv[index]!;
@@ -131,7 +133,7 @@ function parseArgs(argv: string[]): Parsed {
 const submitOptions = [
   "partition", "nodes", "ntasks", "ntasks-per-node", "cpus-per-task", "mem", "mem-per-cpu",
   "gpus", "gpus-per-node", "gpus-per-task", "gres", "exclusive", "array", "dependency",
-  "account", "qos", "constraint", "reservation", "time", "job-name", "apptainer-image", "venv",
+  "account", "qos", "constraint", "nodelist", "exclude", "reservation", "time", "job-name", "apptainer-image", "venv",
 ];
 
 function enforceSubmitShape(parsed: Parsed): void {
@@ -243,6 +245,8 @@ function parseSubmit(parsed: Parsed, policy: ReturnType<typeof loadPolicy>): Ret
     account: parsed.options.get("account"),
     qos: parsed.options.get("qos"),
     constraint: parsed.options.get("constraint"),
+    nodelist: parsed.options.get("nodelist"),
+    exclude: parsed.options.get("exclude"),
     reservation: parsed.options.get("reservation"),
     array: parsed.options.get("array"),
     dependency: parsed.options.get("dependency"),
@@ -402,7 +406,9 @@ export async function main(
           gpus_per_task: parsed.options.get("gpus-per-task"), gres: parsed.options.get("gres"),
           exclusive: parsed.options.has("exclusive") || undefined,
           account: parsed.options.get("account"), qos: parsed.options.get("qos"),
-          constraint: parsed.options.get("constraint"), reservation: parsed.options.get("reservation"),
+          constraint: parsed.options.get("constraint"), nodelist: parsed.options.get("nodelist"),
+          exclude: parsed.options.get("exclude"),
+          reservation: parsed.options.get("reservation"),
           array: parsed.options.get("array"), dependency: parsed.options.get("dependency"),
           apptainer_image: parsed.options.get("apptainer-image"), venv: parsed.options.get("venv"),
         };

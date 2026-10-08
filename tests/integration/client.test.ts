@@ -16,7 +16,9 @@ const policy: Policy = {
   allowedVirtualenvs: { "project-a": "/opt/venvs/project-a" },
   allowedGres: { a100x1: "gpu:a100:1" },
   allowedAccounts: { research: "proj123" }, allowedQos: { normal: "normal" },
-  allowedConstraints: { modern: "[zen3|zen4]" }, allowedReservations: { workshop: "ws2026" },
+  allowedConstraints: { modern: "[zen3|zen4]" }, allowedNodelists: { "gpu-a": "gpu[01-02]" },
+  allowedExcludeNodelists: { maintenance: "gpu[03,07-09]" },
+  allowedReservations: { workshop: "ws2026" },
   maxScriptBytes: 65536, maxScriptArgs: 32, maxScriptArgLength: 1024,
   requireApptainerForGeneratedScripts: false,
 };
@@ -106,15 +108,21 @@ describe("Slurm client security boundaries", () => {
       memory: "1G", time: "00:10:00", memoryGb: 1, timeMinutes: 10, scriptArgs: [],
       account: "research", accountValue: "proj123", qos: "normal", qosValue: "normal",
       constraint: "modern", constraintValue: "[zen3|zen4]",
+      nodelist: "gpu-a", nodelistValue: "gpu[01-02]",
+      exclude: "maintenance", excludeValue: "gpu[03,07-09]",
       reservation: "workshop", reservationValue: "ws2026",
     }, prepared);
     const args = remote.commands.at(-1)?.args ?? [];
     expect(args).toContain("--account=proj123");
     expect(args).toContain("--qos=normal");
     expect(args).toContain("--constraint=[zen3|zen4]");
+    expect(args).toContain("--nodelist=gpu[01-02]");
+    expect(args).toContain("--exclude=gpu[03,07-09]");
     expect(args).toContain("--reservation=ws2026");
     expect(args).not.toContain("--account=research");
     expect(args).not.toContain("--constraint=modern");
+    expect(args).not.toContain("--nodelist=gpu-a");
+    expect(args).not.toContain("--exclude=maintenance");
   });
 
   it("passes MPI topology, per-CPU memory, per-node GPUs, and exclusivity to sbatch", async () => {
