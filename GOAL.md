@@ -1,912 +1,764 @@
-## 1. Project Goal
+# Slurm Agent CLI：專案目標與 Roadmap
 
-建立一個獨立的 **Slurm Agent CLI**，透過 SSH 操作遠端 Slurm Cluster，提供一組安全、結構化、受限的 Slurm job lifecycle commands，供 Agent 透過 `exec` 呼叫。
+> 目前基準版本：`0.8.0`
+>
+> 文件更新日期：2026-10-08
+>
+> 專案狀態：核心安全批次作業 lifecycle 已完成，準備進入下一階段五項功能。
+
+## 1. 專案目標
+
+`slurm-agent` 是供 Agent 透過 `exec` 呼叫的獨立 CLI。它透過已驗證的 SSH 連線操作遠端 Slurm cluster，提供安全、結構化、可稽核且受 policy 限制的 Slurm semantic operations。
 
 核心架構：
 
 ```text
-      Agent
-        │
-        │ exec
-        ▼
-    slurm-agent
-        │
-        │ controlled SSH
-        ▼
- Slurm Login Node
-        │
-        ├── sbatch
-        ├── squeue
-        ├── sacct
-        ├── scancel
-        └── controlled log access
+Agent
+  │
+  │ exec（只允許 slurm-agent）
+  ▼
+slurm-agent CLI
+  ├── argument schema
+  ├── validation / normalization
+  ├── policy enforcement
+  ├── path containment
+  ├── job ownership checks
+  └── audit logging
+  │
+  │ verified, controlled SSH/SFTP
+  ▼
+Slurm Login Node
+  ├── fixed executable allowlist
+  └── separately escaped arguments
+  │
+  ▼
+Slurm Controller / Compute Nodes
 ```
 
-`slurm-agent` 是真正的 capability boundary。
+`slurm-agent` 本身是 capability boundary，而不只是 Slurm commands 的方便包裝。
 
-Agent 不應直接取得：
+## 2. 核心設計原則
+
+1. 只提供明確的 Slurm semantic operations，不提供任意遠端執行。
+2. stdout 預設只輸出一個穩定、machine-readable 的 JSON object。
+3. 所有輸入必須經過 parse、validate、normalize、policy check，再組成遠端命令。
+4. 所有 job mutation 與敏感 job query 都必須限制在 configured SSH user 擁有的 jobs。
+5. 檔案傳輸只能發生在 CLI 決定的受控路徑，不開放遠端檔案瀏覽器或任意來源/目的地。
+6. 新功能若看似需要 generic SSH command，應設計成更窄的 Slurm-specific subcommand。
+7. Slurm、SSH、accounting 或 optional plugin 不可用時，必須回傳明確的結構化錯誤或有定義的降級結果，不得猜測。
+
+明確禁止的 public interface：
 
 ```text
-ssh
-bash
-sh
-sbatch
-squeue
-sacct
-scancel
-scp
-sftp
-arbitrary remote command
+slurm-agent exec ...
+slurm-agent ssh ...
+slurm-agent shell ...
+slurm-agent command ...
+generic SCP/SFTP browser
+arbitrary remote path access
+interactive remote terminal
 ```
 
----
+## 3. 目前已完成的功能
 
-# 2. CLI Interface
+### 3.1 CLI commands
 
-第一版至少提供：
+目前 public interface：
 
-```bash
+```text
 slurm-agent submit
+slurm-agent cluster-info
+slurm-agent nodes
 slurm-agent list
-slurm-agent status
-slurm-agent cancel
-slurm-agent logs
-slurm-agent artifact
+slurm-agent history
+slurm-agent fairshare
+slurm-agent status JOB_ID
+slurm-agent usage JOB_ID
+slurm-agent cancel JOB_ID
+slurm-agent hold JOB_ID
+slurm-agent release JOB_ID
+slurm-agent requeue JOB_ID
+slurm-agent update JOB_ID
+slurm-agent signal JOB_ID
+slurm-agent logs JOB_ID
+slurm-agent artifacts JOB_ID
+slurm-agent artifact JOB_ID
+slurm-agent wait JOB_ID
 ```
 
-例如：
+已完成的能力包括：
 
-```bash
-slurm-agent submit \
-  --partition slurm-test \
-  --ntasks 4 \
-  --mem 8G \
-  --time 01:00:00 \
-  --apptainer-image pytorch \
-  jobs/test.sh
-```
+- 受控 script staging 與 `sbatch` 提交。
+- nodes、tasks、CPU、memory、GPU/GRES、walltime 等有界資源請求。
+- account、QOS、constraint、nodelist、exclude、reservation 的 operator-defined aliases。
+- job arrays、array concurrency 與受限 dependency types。
+- Apptainer、virtualenv 或 policy 允許的 host runtime。
+- active queue、completed accounting history、單一 job status。
+- accounting/live resource usage、CPU/memory efficiency 與 fair-share 查詢。
+- cancel、hold、release、requeue、受限 update 與受限 signal。
+- bounded wait、bounded log tail、artifact listing 與單一檔案下載。
+- stable JSON output、stable process exit codes 與 audit events。
 
-輸出必須預設為 structured JSON：
+### 3.2 Submit 的目前範圍
 
-```json
-{
-  "ok": true,
-  "job_id": "12345"
-}
-```
-
----
-
-# 3. Package Form
-
-建議實作成 Node.js / TypeScript npm package。
-
-例如：
-
-```json
-{
-  "name": "@nchc/slurm-agent",
-  "bin": {
-    "slurm-agent": "./dist/cli.js"
-  }
-}
-```
-
-使用方式：
-
-```bash
-npm install -g @nchc/slurm-agent
-```
-
-之後：
-
-```bash
-slurm-agent status 12345
-```
-
-開發環境也應支援：
-
-```bash
-npx @nchc/slurm-agent status 12345
-```
-
-但 production 不應依賴每次 runtime 動態下載 package。
-
----
-
-# 4. Design Principle
-
-不要提供：
-
-```bash
-slurm-agent exec "..."
-slurm-agent ssh "..."
-slurm-agent run "..."
-slurm-agent command "..."
-```
-
-任何 generic remote execution 都禁止。
-
-只能暴露明確 Slurm semantic operations。
-
----
-
-# 5. SSH Layer
-
-SSH 只存在於 CLI 內部。
-
-建議建立：
+目前接受的主要 submission options：
 
 ```text
-src/
-  transport/
-    ssh.ts
+partition
+nodes
+ntasks
+ntasks-per-node
+cpus-per-task
+mem / mem-per-cpu
+gpus / gpus-per-node / gpus-per-task / gres alias
+account / qos / constraint / nodelist / exclude / reservation aliases
+exclusive
+array
+dependency
+time
+job-name
+apptainer-image / venv
+script arguments
 ```
 
-介面例如：
+重要限制：
 
-```ts
-interface RemoteExecutor {
-  run(command: SafeCommand): Promise<RemoteResult>;
-}
-```
+- `sbatch --ntasks` 只申請可供 job steps 使用的資源，不會自動啟動多個 tasks。
+- trusted runner 目前只執行一次 payload；MPI 或多節點程式仍需由 payload 與 cluster runtime 自行正確啟動。
+- submission 目前只上傳單一 script，不會一併 staging 程式碼、設定檔或資料集。
 
-這個介面只能被內部 Slurm client 使用。
+### 3.3 Query 的目前範圍
 
-CLI user 不得自行指定任意 remote command。
+- `list`：configured user 的 active jobs；目前沒有 caller-provided filters。
+- `status`：先查 `squeue`，離開 queue 後查 `sacct`。
+- `history`：支援 bounded days、state、limit。
+- `usage`：查 accounting steps，active job 可額外查 `sstat`。
+- `fairshare`：查 configured user 的 `sshare` 資料。
+- `cluster-info` / `nodes`：只查 policy 允許的 partitions；目前 node 資料主要是 state、CPU 與 configured GRES。
 
----
+### 3.4 Lifecycle update 的目前範圍
 
-# 6. Required Commands
-
-## `slurm-agent submit`
-
-用途：
+`update` 只允許：
 
 ```text
-submit an Agent-generated local script through controlled staging
+time limit
+dependency
+array concurrency
 ```
 
-建議參數：
+它不是 generic `scontrol update` passthrough。
+
+## 4. Security Boundary
+
+### 4.1 Transport
+
+- SSH command connection 與選用的 SFTP transfer connection 都必須驗證 host identity。
+- 支援 pinned known_hosts 或 SHA256 fingerprint；沒有 insecure host-checking 模式。
+- CLI caller 不能選擇任意 remote executable。
+- 每個 remote argument 必須獨立 escape，禁止字串拼接 shell command。
+
+### 4.2 Script 與路徑
+
+Agent-generated script 必須：
+
+- 位於 `SLURM_LOCAL_JOB_WORKSPACE` 下。
+- 是 regular file，不可為 symlink。
+- 是有效 UTF-8、有 shebang、大小受限。
+- 不含 `#SBATCH` directives。
+- 通過 argument count/length limits。
+
+CLI 只會將 script 上傳至自行產生的：
 
 ```text
-SCRIPT (positional, below SLURM_LOCAL_JOB_WORKSPACE)
---partition
---nodes
---ntasks
---cpus-per-task
---mem
---time
---job-name
+SLURM_REMOTE_WORKSPACE/.slurm-agent/submissions/<uuid>/
 ```
 
-範例：
+logs、inputs 與 artifacts 只能位於 CLI 管理的 submission/job-specific directories。所有 remote/local 路徑都必須做 canonicalization 與 containment check。
 
-```bash
-slurm-agent submit \
-  --partition slurm-test \
-  --ntasks 4 \
-  --apptainer-image pytorch \
-  jobs/naca.sh
-```
+### 4.3 Workspace visibility
 
-必須驗證：
+`SLURM_REMOTE_WORKSPACE` 必須由 login node 與 eligible compute nodes 以相同絕對路徑看見。Policy 中的 Apptainer image 與 virtualenv 也必須在相關節點提供相同內容。
+
+以下只屬於執行 CLI 的機器，不需分享給 Slurm nodes：
 
 ```text
-partition allowlist
-maximum nodes
-maximum ntasks
-maximum CPUs
-maximum memory
-maximum walltime
-local script path, size, type, shebang, and absence of #SBATCH directives
-job name
-```
-
----
-
-## `slurm-agent list`
-
-例如：
-
-```bash
-slurm-agent list
-```
-
-輸出：
-
-```json
-{
-  "ok": true,
-  "jobs": [
-    {
-      "job_id": "12345",
-      "name": "test",
-      "partition": "slurm-test",
-      "state": "RUNNING",
-      "elapsed": "00:03:21"
-    }
-  ]
-}
-```
-
-只能列出 configured SSH user 的 jobs。
-
----
-
-## `slurm-agent status`
-
-例如：
-
-```bash
-slurm-agent status 12345
-```
-
-內部可使用：
-
-```text
-squeue
-↓ if no longer active
-sacct
-```
-
-輸出：
-
-```json
-{
-  "ok": true,
-  "job": {
-    "job_id": "12345",
-    "state": "COMPLETED",
-    "exit_code": "0:0",
-    "elapsed": "00:10:31"
-  }
-}
-```
-
----
-
-## `slurm-agent cancel`
-
-例如：
-
-```bash
-slurm-agent cancel 12345
-```
-
-執行 `scancel` 前必須確認：
-
-```text
-job exists
-job belongs to configured user
-```
-
-禁止：
-
-```bash
-slurm-agent cancel --user all
-slurm-agent cancel --partition xxx
-```
-
-只允許 explicit job ID。
-
----
-
-## `slurm-agent logs`
-
-例如：
-
-```bash
-slurm-agent logs 12345
-```
-
-可選：
-
-```bash
-slurm-agent logs 12345 --stream stdout --tail 200
-```
-
-Agent 不得自行提供任意 filesystem path。
-
-CLI 必須自己解析或保存該 job 的 output path。
-
-限制：
-
-```text
-max lines
-max bytes
-workspace path containment
-```
-
----
-
-## `slurm-agent artifact`
-
-例如：
-
-```bash
-slurm-agent artifact 12345 --path results/model.bin
-```
-
-只能下載該 job 的固定 artifact 目錄內的單一檔案，並存到本機設定的 `SLURM_LOCAL_ARTIFACTS/<job-id>/`。不得讓 Agent 指定任意本機輸出路徑或覆寫既有檔案。
-
----
-
-# 7. Local Script and Remote Workspace
-
-Agent 產生的腳本位於執行 CLI 的本機：
-
-```text
-SLURM_LOCAL_JOB_WORKSPACE=/var/lib/slurm-agent/jobs
-```
-
-若 Agent 指定 `jobs/test.sh`，只能讀取：
-
-```text
-/var/lib/slurm-agent/jobs/jobs/test.sh
-```
-
-CLI 驗證並 hash 腳本後，上傳到自行產生的遠端 staging path。Agent 不得指定遠端目的地。
-
-設定：
-
-```text
-SLURM_REMOTE_WORKSPACE=/home/agent/workspace
-```
-
-遠端腳本只能存放於：
-
-```text
-/home/agent/workspace/.slurm-agent/submissions/<uuid>/
-```
-
-`SLURM_REMOTE_WORKSPACE` 必須是 login node 與所有可執行 job 的 compute nodes 以相同絕對路徑掛載的共享目錄。因為 compute node 需要讀取 staged payload、寫入 logs 與 artifacts，而 login node 之後需要查閱或下載這些檔案。
-
-Policy 內的 Apptainer image 與 virtualenv 固定路徑也必須在 login node 和 compute nodes 上以相同絕對路徑提供相同內容；可使用共享儲存，或由管理員確保每個節點都有一致副本。`SLURM_REMOTE_APPTAINER_PATH` 不必位於共享目錄，但每個相關節點都必須在相同路徑安裝可執行檔。
-
-`SLURM_LOCAL_JOB_WORKSPACE`、`SLURM_LOCAL_ARTIFACTS`、SSH key、known_hosts、policy 與 audit log 都是執行 CLI 那台機器的本機路徑，不需要分享給 Slurm nodes。
-
-必須阻止：
-
-```text
-../
-../../
-absolute external path
-symlink escape
-#SBATCH directives
-oversized script
-```
-
-例如以下全部拒絕：
-
-```text
-/etc/passwd
-/home/other-user/test.sh
-../../secret
-```
-
----
-
-# 8. SSH Configuration
-
-使用環境變數：
-
-```text
-SLURM_SSH_HOST
-SLURM_SSH_PORT
-SLURM_SSH_USER
-SLURM_SSH_KEY_PATH
-SLURM_SSH_KNOWN_HOSTS
-SLURM_REMOTE_WORKSPACE
 SLURM_LOCAL_JOB_WORKSPACE
 SLURM_LOCAL_ARTIFACTS
-SLURM_REMOTE_APPTAINER_PATH
-```
-
-Private key 本身不要放進 command arguments 或 config file。
-
-使用：
-
-```text
-SLURM_SSH_KEY_PATH
-```
-
-指向 key file。
-
----
-
-# 9. Host Verification
-
-Production 必須驗證 SSH host identity。
-
-不要預設：
-
-```text
-StrictHostKeyChecking=no
-```
-
-支援：
-
-```text
+SSH credentials
 known_hosts
-fingerprint verification
+policy file
+audit log
 ```
 
----
+### 4.4 Ownership
 
-# 10. Policy
-
-建立獨立 policy layer。
-
-例如：
-
-```yaml
-allowed_partitions:
-  - slurm-test
-
-max_nodes: 2
-max_ntasks: 16
-max_cpus_per_task: 8
-max_memory_gb: 64
-max_time_minutes: 240
-```
-
-不要把限制散落在 CLI command handler 裡。
-
----
-
-# 11. Safe Command Construction
-
-禁止：
-
-```ts
-const cmd = `sbatch ${userInput}`;
-```
-
-所有 CLI arguments 必須：
+以下操作必須在執行前驗證 job ownership：
 
 ```text
-parse
-validate
-normalize
-policy check
-escape
-construct
+status, usage, wait, logs, artifacts, artifact
+cancel, hold, release, requeue, update, signal
+dependency references
+未來的 diagnose
 ```
 
-如果 remote SSH library 最終只能接受 shell command string，要實作嚴格 shell escaping。
+Array parent 與 explicit task ID 必須沿用現有一致語意；需要單一 task 資料時，不得默默選取任一 array task。
 
-任何 user-supplied value 都不得直接 concatenate。
-
----
-
-# 12. Output Contract
-
-所有 commands 預設 stdout 必須是 JSON。
+### 4.5 Output 與 audit
 
 成功：
 
 ```json
-{
-  "ok": true,
-  "job_id": "12345"
-}
+{"ok":true,"job_id":"12345"}
 ```
 
 失敗：
 
 ```json
+{"ok":false,"error":{"code":"PARTITION_NOT_ALLOWED","message":"Partition gpu is not permitted."}}
+```
+
+Audit event 應包含 timestamp、action、SSH user、job ID、resource summary、policy decision、result 與 remote exit code；不得包含 password、private key、credential environment 或未處理的 remote stderr。
+
+目前 exit-code contract：
+
+```text
+0 success
+1 configuration or general failure
+2 invalid arguments
+3 policy/path denied
+4 SSH/host-verification/timeout failure
+5 Slurm operation failure
+6 job/log/artifact not found
+7 permission/ownership denied
+```
+
+## 5. 下一階段：五項優先功能
+
+這五項共同構成下一階段，不代表只挑其中一項。實作順序需考慮依賴，但 milestone 完成標準是五項全部完成。
+
+建議順序：
+
+```text
+1. submission-scoped input bundle
+2. safe parallel launcher
+3. diagnose JOB_ID
+4. list/history filters
+5. node memory/GPU availability
+```
+
+Input bundle 先完成，讓 safe launcher 在單節點、多節點與 container runtime 下都有一致的 payload/input layout。三項 read-only query 功能可在前兩項介面穩定後平行開發。
+
+## 6. Priority 1：Submission-scoped input bundle
+
+### 6.1 目的
+
+目前 submission 只上傳 script。新增受控 input staging，讓 job 可以攜帶程式碼、設定檔或小型輸入資料，但不開放 generic file transfer。
+
+目標介面：
+
+```bash
+slurm-agent submit [resources] \
+  --input inputs/config.yaml \
+  --input src/model.py \
+  jobs/train.sh
+```
+
+也可在後續評估單一 archive/bundle 形式，但第一版應選一種明確、容易驗證且沒有模糊覆寫語意的模式。
+
+### 6.2 路徑與 runtime contract
+
+- 每個 input 都必須位於 `SLURM_LOCAL_JOB_WORKSPACE` 下。
+- 禁止 absolute path、`..`、symlink、device、FIFO、socket 與 hard-link ambiguity。
+- inputs 上傳到該次 UUID submission directory 的固定 `inputs/` 子目錄。
+- destination relative path 由安全的 local relative path 決定，caller 不可指定任意 remote path。
+- payload 透過固定環境變數取得 input root，例如：
+
+```text
+SLURM_AGENT_INPUT_DIR
+```
+
+- Apptainer 將 input directory bind 到固定的唯讀 `/inputs`。
+- host/venv runtime 取得 job-specific remote input directory，但不得取得 transfer API。由於 payload 與 staged files 使用同一個 Unix identity，host/venv 模式不能宣稱具有和 read-only container mount 相同的防竄改保證；此限制必須明確文件化。
+- array tasks 共用同一份 inputs。Apptainer 模式必須唯讀；host/venv 模式至少要避免 CLI 主動覆寫並清楚標示其非 sandbox 性質。
+
+### 6.3 Policy
+
+至少新增：
+
+```yaml
+max_input_files: 64
+max_input_file_bytes: 104857600
+max_input_total_bytes: 536870912
+```
+
+可再評估 allowlisted suffix、單檔 checksum requirement 或 operator-defined dataset aliases。所有 limits 預設應 fail closed。
+
+### 6.4 Output 與 audit
+
+Submit response 可包含不洩漏 remote internals 的摘要：
+
+```json
 {
-  "ok": false,
-  "error": {
-    "code": "PARTITION_NOT_ALLOWED",
-    "message": "Partition gpu is not permitted."
+  "ok": true,
+  "job_id": "12345",
+  "inputs": {
+    "files": 2,
+    "bytes": 8421,
+    "manifest_sha256": "..."
   }
 }
 ```
 
-不要把 CLI table 當主要 machine interface。
+Audit 記錄 file count、total bytes、manifest hash；預設不記錄檔案內容。
 
-可選擇提供：
+### 6.5 驗收重點
+
+```text
+single and multiple inputs
+nested relative paths
+duplicate destination rejection
+missing file
+absolute/traversal path
+local symlink and special file rejection
+per-file/count/total size limits
+partial upload cleanup or safe unusable staging state
+read-only Apptainer mount
+array sharing semantics
+manifest/hash stability
+```
+
+## 7. Priority 2：Safe parallel launcher
+
+### 7.1 目的
+
+讓 `--ntasks` 不只配置資源，也能由 trusted runner 以明確模式啟動 Slurm job step，支援常見 MPI/多節點 workload，同時不提供 generic `srun` passthrough。
+
+目標介面：
 
 ```bash
---human
+slurm-agent submit [resources] --launcher single jobs/train.sh
+slurm-agent submit [resources] --launcher srun jobs/mpi.sh
 ```
 
-給人類使用。
+`single` 保持目前語意。是否讓 `ntasks > 1` 時強制明確指定 launcher，需在實作前確定 migration policy；不得靜默改變既有 job 的執行次數。
 
-但 Agent 預設應使用 JSON。
+### 7.2 Launcher contract
 
----
+- `single`：trusted runner 只執行一次 payload。
+- `srun`：trusted runner 使用 operator-controlled `srun` executable 啟動 payload。
+- caller 不能傳入任意 `srun` flags。
+- task count、task placement、CPU/GPU binding 只能來自已驗證的 submit options 與 policy-defined enum/aliases。
+- 第一版應定義支援的 MPI mode，例如 `none` 或 policy allowlisted `pmix` variants；不可接受 raw plugin name。
+- 必須定義 single-node、multi-node、array 與 dependency jobs 的一致行為。
 
-# 13. Exit Codes
-
-CLI 必須有穩定 exit code。
-
-建議：
+可能的 bounded options：
 
 ```text
-0 success
-1 general failure
-2 invalid arguments
-3 policy denied
-4 SSH failure
-5 Slurm operation failure
-6 job not found
-7 permission / ownership denied
+--launcher single|srun
+--mpi ALIAS
+--distribution block|cyclic
+--cpu-bind ALIAS
+--gpu-bind ALIAS
 ```
 
-JSON error code 與 process exit code 都要存在。
+只有實際需要且能跨目標 cluster 穩定支援的項目才加入第一版。
 
----
+### 7.3 Container integration
 
-# 14. Error Codes
+Apptainer 模式必須明確選擇並測試其中一種架構：
 
-至少建立：
+1. host `srun` 啟動每個 task，再由每個 task 進入 Apptainer；或
+2. container 內的 Slurm/MPI stack 啟動 tasks，並由 operator 保證 ABI/plugin 相容。
+
+優先選擇能由 CLI 控制 executable、避免依賴未知 image 內容、且可在部署 cluster 驗證的方式。不得假設任意 image 內都有可用且相容的 `srun`。
+
+### 7.4 Policy
+
+至少需要明確表達：
+
+```yaml
+allowed_launchers: [single, srun]
+allowed_mpi_modes: [pmix]
+allowed_distributions: [block, cyclic]
+```
+
+若某欄位省略，相關進階能力預設停用。
+
+### 7.5 驗收重點
 
 ```text
-INVALID_ARGUMENT
-INVALID_JOB_ID
-
-SSH_CONNECTION_FAILED
-SSH_AUTH_FAILED
-SSH_HOST_VERIFICATION_FAILED
-
-PARTITION_NOT_ALLOWED
-RESOURCE_LIMIT_EXCEEDED
-TIME_LIMIT_EXCEEDED
-
-PATH_NOT_ALLOWED
-SCRIPT_NOT_FOUND
-
-JOB_NOT_FOUND
-JOB_NOT_OWNED_BY_USER
-
-SLURM_SUBMIT_FAILED
-SLURM_QUERY_FAILED
-SLURM_CANCEL_FAILED
-
-REMOTE_COMMAND_TIMEOUT
+single launcher backward compatibility
+srun launches the requested number of tasks
+single-node and multi-node placement
+cpus-per-task propagation
+GPU-per-task behavior
+array task behavior
+host, venv and Apptainer runtime behavior
+MPI mode allowlist
+rejection of arbitrary launcher flags
+signal, cancel and exit-code propagation
+logs and artifacts under multiple ranks
+partial task failure behavior
 ```
 
----
+多 rank artifact 寫入需要明確避免互相覆寫；可提供 rank-aware subdirectory contract，例如以 `SLURM_PROCID` 區分，但不得讓 caller 逃離 job artifact root。
 
-# 15. Audit Logging
+## 8. Priority 3：`diagnose JOB_ID`
 
-記錄：
+### 8.1 目的
 
-```text
-timestamp
-action
-SSH user
-job ID
-resources
-policy decision
-result
-remote exit code
-```
-
-不要記錄：
-
-```text
-SSH key
-password
-secret
-environment credentials
-```
-
-Audit log 應寫 stderr、log file 或 dedicated logger。
-
-不得污染 stdout JSON。
-
----
-
-# 16. Suggested Structure
-
-```text
-slurm-agent/
-├── GOAL.md
-├── README.md
-├── package.json
-├── tsconfig.json
-│
-├── src/
-│   ├── cli.ts
-│   │
-│   ├── commands/
-│   │   ├── submit.ts
-│   │   ├── list.ts
-│   │   ├── status.ts
-│   │   ├── cancel.ts
-│   │   └── logs.ts
-│   │
-│   ├── slurm/
-│   │   ├── client.ts
-│   │   ├── parser.ts
-│   │   ├── commands.ts
-│   │   └── types.ts
-│   │
-│   ├── transport/
-│   │   ├── ssh.ts
-│   │   └── types.ts
-│   │
-│   ├── policy/
-│   │   ├── loader.ts
-│   │   ├── validator.ts
-│   │   └── path.ts
-│   │
-│   ├── config/
-│   │   └── loader.ts
-│   │
-│   ├── audit/
-│   │   └── logger.ts
-│   │
-│   └── errors/
-│       └── errors.ts
-│
-├── tests/
-│   ├── commands/
-│   ├── policy/
-│   ├── parser/
-│   └── integration/
-│
-└── examples/
-    └── config.yaml
-```
-
----
-
-# 17. Implementation Order
-
-## Phase 1
-
-建立可執行 CLI：
+新增：
 
 ```bash
-slurm-agent --help
-slurm-agent --version
+slurm-agent diagnose JOB_ID
 ```
 
----
+用結構化資料回答：
 
-## Phase 2
+- job 為什麼還在等待？
+- 是否被 dependency、begin time、priority、resource、account/QOS limit 或 constraint 阻擋？
+- Slurm 是否提供預估開始時間？
+- job 實際要求哪些 scheduling resources？
+- 使用 multifactor priority 時，各 priority factors 的貢獻為何？
 
-建立 SSH transport。
+它不是任意 `scontrol`/`sprio` passthrough，也不得回傳未解析的完整 Slurm output。
 
-完成：
+### 8.2 資料來源
+
+使用最少量的 bounded read-only queries：
+
+1. 既有 `squeue` / `sacct` lookup：確認 job、ownership 與基本狀態。
+2. `scontrol show job JOB_ID`：取得 dependency、eligible/begin time、requested resources 與 scheduling fields。
+3. `sprio --jobs=JOB_ID`：pending 且使用 multifactor priority 時取得 priority factors。
+
+新增 `sprio` 前必須加入 internal executable allowlist；caller 不可選擇任何 `sprio` flags。
+
+### 8.3 JSON contract
+
+目標輸出形狀：
+
+```json
+{
+  "ok": true,
+  "job_id": "12345",
+  "job": {
+    "state": "PENDING",
+    "reason": "Priority",
+    "partition": "gpu",
+    "eligible_time": "2026-10-08T09:00:00",
+    "expected_start_time": "2026-10-08T18:30:00",
+    "dependency": null
+  },
+  "requested_resources": {
+    "nodes": 1,
+    "cpus": 8,
+    "memory": "32G",
+    "tres": "cpu=8,mem=32G,gres/gpu=1"
+  },
+  "priority": {
+    "available": true,
+    "total": 48321,
+    "age": 1200,
+    "association": 0,
+    "fairshare": 35100,
+    "job_size": 21,
+    "partition": 12000,
+    "qos": 0,
+    "tres": 0,
+    "nice": 0
+  },
+  "findings": [
+    {
+      "code": "WAITING_FOR_PRIORITY",
+      "message": "The job is eligible and is waiting behind higher-priority work."
+    }
+  ]
+}
+```
+
+Contract rules：
+
+- 保留 Slurm normalized `state` 與原始 `reason`。
+- 無法取得的 optional fields 應省略或使用明確的 `available: false`，不得製造數值。
+- `findings[].code` 必須穩定；分類只能根據 Slurm 已回報資料。
+- Slurm 未提供 estimate 時省略 `expected_start_time`。
+- priority plugin 未啟用、`sprio` 不支援或 job 不再 pending 時，回傳 `priority.available: false`，不讓整個 diagnose 失敗。
+- ownership、主要 job lookup 或必要 query 失敗時，使用既有 stable error contract。
+
+第一版 finding codes 至少包含：
 
 ```text
-connect
-host verify
-execute controlled command
-stdout
-stderr
-exit code
-timeout
+DEPENDENCY_BLOCKED
+BEGIN_TIME_NOT_REACHED
+WAITING_FOR_PRIORITY
+WAITING_FOR_RESOURCES
+UNSATISFIABLE_CONSTRAINT
+ACCOUNT_OR_QOS_LIMIT
+JOB_RUNNING
+JOB_COMPLETED
+JOB_FAILED
+UNKNOWN_PENDING_REASON
 ```
 
----
+### 8.4 驗收重點
 
-## Phase 3
+```text
+pending Priority / Resources / Dependency / BeginTime
+account or QOS limit
+bad constraint
+running, completed and failed jobs
+sprio unavailable, empty or malformed
+multifactor priority parsing
+foreign-owned job
+array parent and explicit task ID
+invalid/injected job ID
+truncated remote output
+stable findings and audit behavior
+```
 
-先做 read-only：
+## 9. Priority 4：`list` / `history` filters
+
+### 9.1 目的
+
+讓使用者能在大量 jobs 中取得相關結果，不必下載整份 queue/history 後自行過濾，也避免無界 accounting queries。
+
+目標介面：
 
 ```bash
-slurm-agent list
-slurm-agent status <job-id>
+slurm-agent list --state PENDING --partition gpu --name train --limit 50
+slurm-agent history --since 2026-10-01 --until 2026-10-08 \
+  --state FAILED --partition gpu --name train --limit 100
 ```
 
----
+實際名稱需維持簡潔且和既有 `--days` 相容。
 
-## Phase 4
+### 9.2 第一版 filters
 
-做：
+`list`：
+
+```text
+state
+partition alias
+job-name exact match or safe bounded prefix
+account alias
+limit
+sort enum
+array view: expanded|summary
+```
+
+`history`：
+
+```text
+days 或 since/until（二者互斥規則需明確）
+state（可評估 bounded comma-separated list）
+partition alias
+job-name exact match or safe bounded prefix
+account alias
+limit
+sort enum
+```
+
+所有 scheduler selectors 必須沿用 policy aliases；不得接受 raw partition/account 值繞過 policy。
+
+### 9.3 Query 與 limit contract
+
+- 所有 queries 固定為 configured SSH user。
+- server-side filter 能安全表達時優先使用，否則在 bounded result 上 local filter。
+- `limit` 不只限制最後輸出，也要配合固定 byte cap，避免先抓取無界資料。
+- `since/until` 必須使用嚴格 ISO-like grammar、明確 timezone contract，並受最大 history window 限制。
+- sort 只接受 enum，例如 `submit_time_desc`、`start_time_desc`、`priority_desc`；不可傳 raw Slurm format/sort expression。
+- array summary 必須定義 aggregate state/count，不得因 task expansion 造成無界輸出。
+
+### 9.4 Response contract
+
+回傳 normalized query，讓 Agent 知道實際套用的範圍：
+
+```json
+{
+  "ok": true,
+  "query": {
+    "state": ["FAILED"],
+    "partition": "gpu",
+    "since": "2026-10-01T00:00:00+08:00",
+    "until": "2026-10-08T23:59:59+08:00",
+    "limit": 100,
+    "sort": "start_time_desc"
+  },
+  "jobs": []
+}
+```
+
+### 9.5 驗收重點
+
+```text
+each filter independently and combined
+policy alias resolution
+days versus since/until conflicts
+timezone boundary
+state validation
+name/control-character injection
+sort allowlist
+limit and output-byte cap
+array expanded/summary behavior
+no cross-user rows
+malformed and truncated output
+```
+
+## 10. Priority 5：Node memory/GPU availability
+
+### 10.1 目的
+
+擴充 `nodes` 與必要的 `cluster-info`，讓使用者在提交前能判斷 policy-allowed nodes 上的 memory、GPU/GRES、feature 與不可用原因，而不只看到 configured CPU/GRES。
+
+目標介面：
 
 ```bash
-slurm-agent submit
+slurm-agent nodes
+slurm-agent nodes --partition gpu --state idle --feature modern-cpu
 ```
 
-加入完整 resource / path / partition policy。
+Filters 是否全部納入第一版，可依 parser 與 policy 複雜度分批完成；回傳欄位屬於本 priority 的必要範圍。
 
----
+### 10.2 Node fields
 
-## Phase 5
+至少新增：
 
-做：
+```text
+memory.total_mib
+memory.allocated_mib（cluster 有資料時）
+memory.free_mib（informational，cluster 有資料時）
+gres_configured
+gres_used
+features
+active_features
+reason
+reason_time（可取得時）
+temporary_disk_mib（可取得時）
+```
+
+既有 CPU state 與 node state 欄位保持相容。
+
+### 10.3 語意要求
+
+- `free_mib` 是 node OS 回報的即時資訊，不等同 scheduler 可配置 memory；欄位或文件必須清楚標示 informational。
+- `gres_configured` 與 `gres_used` 必須分離，不能以字串相減推導錯誤的 GPU availability。
+- 若能可靠解析 typed GPU totals/used，可額外提供 normalized summary；無法可靠解析時保留 bounded raw GRES tokens。
+- node reason 只能來自 Slurm，不自行推測硬體故障原因。
+- 只查 policy 允許的 partitions；重複出現在多個 partitions 的 node 必須有穩定表示方式。
+- filters 使用 partition/feature aliases 或 strict enum，不接受 raw Slurm expressions。
+
+### 10.4 Response example
+
+```json
+{
+  "ok": true,
+  "nodes": [
+    {
+      "node_name": "gpu01",
+      "partition": "gpu",
+      "state": "mixed",
+      "cpus": {"allocated": 32, "idle": 32, "other": 0, "total": 64},
+      "memory": {
+        "total_mib": 515000,
+        "allocated_mib": 257500,
+        "free_mib": 241000,
+        "free_is_informational": true
+      },
+      "gres_configured": ["gpu:a100:4"],
+      "gres_used": ["gpu:a100:2"],
+      "features": ["zen4", "a100"],
+      "active_features": ["zen4", "a100"]
+    }
+  ]
+}
+```
+
+### 10.5 驗收重點
+
+```text
+memory and GRES parsing
+missing/unknown/free-memory values
+mixed, drained and down nodes
+drain reason sanitization
+configured versus used GRES
+multiple GRES types
+node in multiple partitions
+partition/state/feature filters
+policy partition containment
+large cluster output cap
+malformed and truncated output
+```
+
+## 11. 五項功能的共同 Definition of Done
+
+下一階段完成時，必須全部滿足：
+
+- 五項 public contracts、help 與 README 已同步。
+- policy schema、example policy 與 unknown-key fail-closed behavior 已更新。
+- command handlers、Slurm client、types、parsers 與 transport allowlist 維持分層。
+- 新增 output fields 和 errors 有穩定 machine-readable contract。
+- 所有 remote calls 都使用 typed `SafeCommand`、固定 executable 與獨立 escaped arguments。
+- input、launcher、query filters 與 node filters 都有明確 limits。
+- ownership、path containment、argument injection、malformed output、truncation 與 policy denial 都有測試。
+- array、Apptainer、venv、host runtime 的相關語意已文件化並測試。
+- audit events 不包含檔案內容、credentials 或 raw remote output。
+- 以下全部通過：
 
 ```bash
-slurm-agent cancel
+npm run typecheck
+npm test
+npm run build
 ```
 
-加入 ownership validation。
+## 12. 後續 Roadmap
 
----
+五項優先功能完成後再評估：
 
-## Phase 6
+- scheduled/checkpointable submission：begin、deadline、pre-time-limit signal、requeue preference。
+- additional HPC resources：mem/cpus/ntasks per GPU、threads/core、hint、local scratch、license aliases。
+- bounded log follow 與 array log aggregation。
+- account/project allocation 與 TRES usage reports。
+- submission manifest、provenance 與安全的 clone/resubmit。
+- operator-defined、短時間且無 interactive shell 的 debug-job templates。
 
-做：
+## 13. Non-goals
 
-```bash
-slurm-agent logs
-```
-
-加入 filesystem containment。
-
----
-
-## Phase 7
-
-完成 security tests。
-
----
-
-# 18. Security Tests
-
-必須測：
+除非安全模型與部署方式有重大改變，以下維持 non-goals：
 
 ```text
-../ traversal
-absolute path escape
-symlink escape
-
-;
-&&
-||
-|
-$()
-backticks
-newline
-quotes
-
-unexpected Slurm flags
-argument injection
-
-oversized CPU
-oversized memory
-oversized nodes
-oversized time
-
-unauthorized partition
-other user's job ID
-arbitrary file read
-```
-
-全部必須被拒絕。
-
----
-
-# 19. Deployment Model
-
-預期 production 使用方式：
-
-```text
-container / host bootstrap
-       ↓
-install fixed CLI version
-       ↓
-slurm-agent available in PATH
-       ↓
-Agent exec allowlist
-       ↓
-slurm-agent only
-```
-
-不要讓 Agent 依賴：
-
-```text
-npm
-npx arbitrary package
-node arbitrary-script.js
-ssh
-bash
-```
-
-最好固定 executable：
-
-```text
-/usr/local/bin/slurm-agent
-```
-
----
-
-# 20. Non-Goals
-
-不要做：
-
-```text
-generic SSH client
-generic shell
-remote terminal
-SFTP browser
-SCP arbitrary files
+generic SSH client or shell
+interactive salloc / srun --pty / sattach
+remote terminal or port forwarding
+generic SCP/SFTP browser
+arbitrary local or remote file paths
 sudo
-sacctmgr
-node administration
-partition administration
-interactive srun
-port forwarding
+sacctmgr mutation
+node/partition administration
+unbounded cluster-wide queries
+caller-defined remote executable or raw command flags
 ```
 
----
+## 14. Development 與部署原則
 
-# 21. Definition of Done
+每個新功能都應：
 
-專案完成時：
+1. 先定義 CLI 與 JSON contract。
+2. 在 policy/types 中明確表達限制。
+3. 使用 typed `SafeCommand`，不接受 raw command string。
+4. 對 parser 加入正常、空值、malformed、truncated output 測試。
+5. 對 ownership、path containment、argument injection 與 output limits 加入 security tests。
+6. 更新 README、help text、skill instructions 與 example policy。
+7. 不以支援所有 Slurm flags 為目標；只加入需求明確、可受 policy 控制的 semantic capability。
 
-```bash
-slurm-agent submit ...
-slurm-agent list
-slurm-agent status ...
-slurm-agent logs ...
-slurm-agent cancel ...
-slurm-agent artifact ...
-```
+Production 應安裝固定版本，Agent runtime 只允許執行已安裝的 `slurm-agent`，不允許使用 `npm`、`npx`、`node`、`ssh` 或 shell 作為替代執行路徑。
 
-都能正常使用。
+## 15. 專案完成標準
 
-而以下不可行：
-
-```bash
-slurm-agent exec ...
-slurm-agent ssh ...
-slurm-agent shell ...
-```
-
-最終 security boundary：
-
-```text
-Agent
-  │
-  │ exec
-  ▼
-slurm-agent CLI
-  │
-  ├── schema
-  ├── validation
-  ├── policy
-  ├── path containment
-  ├── ownership
-  └── audit
-  │
-  ▼
-controlled SSH
-  │
-  ▼
-Slurm Login Node
-  │
-  ▼
-Slurm
-```
-
----
-
-# 22. Instructions to Implementing Agent
-
-先完成：
-
-```text
-CLI
-→ SSH
-→ read-only Slurm
-→ submit
-→ cancel
-→ logs
-→ policy
-→ security tests
-```
-
-如果某項功能似乎需要 arbitrary SSH command，不要增加 generic command interface。
-
-應新增更窄的 Slurm-specific subcommand。
-
-完成後回報：
-
-```text
-1. architecture
-2. implemented commands
-3. files changed
-4. tests run
-5. security tests
-6. remaining limitations
-7. installation steps
-```
+- 常用 batch lifecycle 能以明確、穩定的 semantic commands 完成。
+- Agent 能取得足夠的狀態、診斷、resource availability、usage、logs 與 artifacts 來做可靠決策。
+- 單節點與 policy-approved 多 task/multi-node workloads 有明確且可驗證的 launch semantics。
+- Job inputs 與 outputs 都有受控、bounded、可稽核的資料路徑。
+- Operator 能以 policy 限制 partition、resources、runtime、launcher、scheduler selectors 與資料範圍。
+- 所有 mutation 與敏感讀取都有 ownership validation 與 audit trail。
+- 任意 shell、任意 SSH command、任意 path 與任意 transfer 始終不可由 Agent 取得。
+- 新增功能不削弱既有 capability boundary。
