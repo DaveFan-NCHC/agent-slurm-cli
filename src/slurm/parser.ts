@@ -1,7 +1,7 @@
 import { AgentError, ExitCode } from "../errors/errors.js";
 import { resolveWorkspacePath } from "../policy/path.js";
 import type {
-  ArtifactEntry, FairShareEntry, JobSummary, JobUsage, OwnedHistoryJob, OwnedJob, PartitionInfo, UsageStep,
+  ArtifactEntry, FairShareEntry, JobSummary, JobUsage, NodeInfo, OwnedHistoryJob, OwnedJob, PartitionInfo, UsageStep,
 } from "./types.js";
 
 function rows(output: string): string[][] {
@@ -134,6 +134,35 @@ export function parseClusterInfo(output: string): PartitionInfo[] {
         total: parseNonNegativeInteger(cpuFields[3]!),
       },
       gres: fields[6] === "(null)" ? [] : fields[6]!.split(",").filter(Boolean),
+    };
+  });
+}
+
+export function parseNodeInfo(output: string): NodeInfo[] {
+  return rows(output).map((fields) => {
+    if (fields.length !== 6 || !/^[A-Za-z0-9_.-]+$/.test(fields[0]!)) {
+      throw new AgentError("SLURM_QUERY_FAILED", "Unexpected sinfo node output.", ExitCode.SlurmFailure);
+    }
+    const partition = fields[1]!.replace(/\*$/, "");
+    if (!/^[A-Za-z0-9_.-]+$/.test(partition)) {
+      throw new AgentError("SLURM_QUERY_FAILED", "Unexpected sinfo node output.", ExitCode.SlurmFailure);
+    }
+    const cpuFields = fields[4]!.split("/");
+    if (cpuFields.length !== 4) {
+      throw new AgentError("SLURM_QUERY_FAILED", "Unexpected sinfo node CPU summary.", ExitCode.SlurmFailure);
+    }
+    return {
+      node_name: fields[0]!,
+      partition,
+      availability: fields[2]!,
+      state: fields[3]!,
+      cpus: {
+        allocated: parseNonNegativeInteger(cpuFields[0]!),
+        idle: parseNonNegativeInteger(cpuFields[1]!),
+        other: parseNonNegativeInteger(cpuFields[2]!),
+        total: parseNonNegativeInteger(cpuFields[3]!),
+      },
+      gres: fields[5] === "(null)" ? [] : fields[5]!.split(",").filter(Boolean),
     };
   });
 }

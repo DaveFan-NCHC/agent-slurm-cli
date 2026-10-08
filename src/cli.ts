@@ -11,6 +11,7 @@ import { runHistory } from "./commands/history.js";
 import { runHold } from "./commands/hold.js";
 import { runList } from "./commands/list.js";
 import { runLogs } from "./commands/logs.js";
+import { runNodes } from "./commands/nodes.js";
 import { runRelease } from "./commands/release.js";
 import { runRequeue } from "./commands/requeue.js";
 import { runSignal } from "./commands/signal.js";
@@ -37,6 +38,7 @@ const HELP = `slurm-agent ${VERSION}
 Usage:
   slurm-agent submit [options] SCRIPT [SCRIPT_ARGS...]
   slurm-agent cluster-info
+  slurm-agent nodes
   slurm-agent list
   slurm-agent history [--days N] [--state STATE] [--limit N]
   slurm-agent fairshare
@@ -158,6 +160,7 @@ function prevalidateShape(parsed: Parsed): void {
       break;
     case "list":
     case "cluster-info":
+    case "nodes":
     case "fairshare":
       enforceShape(parsed, [], 0);
       break;
@@ -290,7 +293,7 @@ export async function main(
   try {
     const parsed = parseArgs(argv);
     action = parsed.command;
-    if (!["submit", "cluster-info", "list", "history", "fairshare", "status", "usage", "cancel", "hold", "release", "requeue", "update", "signal", "logs", "artifact", "artifacts", "wait"].includes(parsed.command)) {
+    if (!["submit", "cluster-info", "nodes", "list", "history", "fairshare", "status", "usage", "cancel", "hold", "release", "requeue", "update", "signal", "logs", "artifact", "artifacts", "wait"].includes(parsed.command)) {
       throw invalid(`Unknown command: ${parsed.command}.`);
     }
     prevalidateShape(parsed);
@@ -313,6 +316,10 @@ export async function main(
       case "cluster-info":
         enforceShape(parsed, [], 0);
         response = await runClusterInfo(context);
+        break;
+      case "nodes":
+        enforceShape(parsed, [], 0);
+        response = await runNodes(context);
         break;
       case "fairshare":
         enforceShape(parsed, [], 0);

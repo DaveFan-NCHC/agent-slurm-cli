@@ -8,10 +8,11 @@ import type { Policy } from "../policy/types.js";
 import type { RemoteExecutor, RemoteResult, SafeCommand } from "../transport/types.js";
 import {
   parseAccountingJobs, parseArtifactList, parseClusterInfo, parseFairShare, parseHistory, parseJobUsage, parseLiveUsage,
+  parseNodeInfo,
   parseQueueJobs, parseQueueList, parseSubmittedJobId,
 } from "./parser.js";
 import type {
-  ArtifactEntry, ArtifactResult, FairShareEntry, HistoryJob, JobSummary, JobUsage, LogResult, OwnedJob,
+  ArtifactEntry, ArtifactResult, FairShareEntry, HistoryJob, JobSummary, JobUsage, LogResult, NodeInfo, OwnedJob,
   PartitionInfo, WaitResult,
 } from "./types.js";
 import { TRUSTED_RUNNER } from "./runner.js";
@@ -129,6 +130,27 @@ export class SlurmClient {
       throw new AgentError("SLURM_QUERY_FAILED", "Slurm returned a partition outside the configured policy.", ExitCode.SlurmFailure);
     }
     return partitions;
+  }
+
+  async nodes(): Promise<NodeInfo[]> {
+    const result = await this.run({
+      executable: "sinfo",
+      args: [
+        "--noheader", "--Node",
+        `--partition=${this.policy.allowedPartitions.join(",")}`,
+        "--format=%N|%P|%a|%t|%C|%G",
+      ],
+      maxOutputBytes: 1048576,
+    });
+    if (result.exitCode !== 0) failure(result, "SLURM_QUERY_FAILED", "Unable to list Slurm nodes.");
+    if (result.stdoutTruncated) {
+      throw new AgentError("SLURM_QUERY_FAILED", "Slurm node list exceeded the safe output limit.", ExitCode.SlurmFailure);
+    }
+    const nodes = parseNodeInfo(result.stdout);
+    if (nodes.some((node) => !this.policy.allowedPartitions.includes(node.partition))) {
+      throw new AgentError("SLURM_QUERY_FAILED", "Slurm returned a node outside the configured partition policy.", ExitCode.SlurmFailure);
+    }
+    return nodes;
   }
 
   async history(days: number, state: string | undefined, limit: number): Promise<HistoryJob[]> {

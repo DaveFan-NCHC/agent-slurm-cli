@@ -9,7 +9,7 @@ Use the installed `slurm-agent` executable as the only interface to the remote S
 
 ## Boundaries
 
-- Invoke only `submit`, `cluster-info`, `list`, `history`, `fairshare`, `status`, `usage`, `wait`, `logs`, `cancel`, `hold`, `release`, `requeue`, `update`, `signal`, `artifacts`, or `artifact`.
+- Invoke only `submit`, `cluster-info`, `nodes`, `list`, `history`, `fairshare`, `status`, `usage`, `wait`, `logs`, `cancel`, `hold`, `release`, `requeue`, `update`, `signal`, `artifacts`, or `artifact`.
 - Never invoke or propose `ssh`, `exec`, `shell`, `run`, `scp`, `sftp`, arbitrary remote commands, or arbitrary remote/local paths.
 - Treat stdout as the machine-readable JSON response. Audit records may appear on stderr and must not be mixed into JSON parsing.
 - Do not expose SSH keys, credentials, or trusted `SLURM_*` environment values.
@@ -133,6 +133,7 @@ Do not automatically retry an ambiguous failed submission, because the first sub
 
 ```bash
 slurm-agent cluster-info
+slurm-agent nodes
 slurm-agent list
 slurm-agent history --days 7 --state COMPLETED --limit 50
 slurm-agent fairshare
@@ -141,7 +142,7 @@ slurm-agent usage 12345
 slurm-agent wait 12345 --timeout 3600 --poll-interval 10
 ```
 
-`cluster-info` returns only policy-allowed partitions. `list` returns only active jobs belonging to the configured SSH user. `history` returns bounded accounting records for that fixed user; keep `--days` and `--limit` within policy and use only supported states. `fairshare` returns `sshare` values only for that user; unavailable data may indicate cluster accounting/fair-share configuration rather than an empty queue. `status` checks active jobs through `squeue` and completed jobs through `sacct`. Active results may include pending reason, priority, actual or expected start time, submit time, time limit/remaining, nodes, account, QOS, and reservation. Treat a pending `start_time` as an estimate and report that it is unavailable when omitted. `usage` verifies ownership and returns accounting efficiency plus live `sstat` steps when available. Missing efficiency fields mean Slurm did not report enough inputs; do not invent values. `wait` applies the same ownership check on every poll and is bounded by the policy maximum timeout. A wait timeout is a successful observation with `terminal: false` and `timed_out: true`. When `terminal` is true, inspect `job.state` and `job.exit_code`; terminal does not imply success. Never substitute another user, a partition, or a wildcard for an explicit job ID.
+`cluster-info` returns only policy-allowed partition summaries. `nodes` returns node-level names, state, CPU, and GRES only for those same partitions and accepts no partition override. `list` returns only active jobs belonging to the configured SSH user. `history` returns bounded accounting records for that fixed user; keep `--days` and `--limit` within policy and use only supported states. `fairshare` returns `sshare` values only for that user; unavailable data may indicate cluster accounting/fair-share configuration rather than an empty queue. `status` checks active jobs through `squeue` and completed jobs through `sacct`. Active results may include pending reason, priority, actual or expected start time, submit time, time limit/remaining, nodes, account, QOS, and reservation. Treat a pending `start_time` as an estimate and report that it is unavailable when omitted. `usage` verifies ownership and returns accounting efficiency plus live `sstat` steps when available. Missing efficiency fields mean Slurm did not report enough inputs; do not invent values. `wait` applies the same ownership check on every poll and is bounded by the policy maximum timeout. A wait timeout is a successful observation with `terminal: false` and `timed_out: true`. When `terminal` is true, inspect `job.state` and `job.exit_code`; terminal does not imply success. Never substitute another user, a partition, or a wildcard for an explicit job ID.
 
 ### Hold, release, and requeue
 

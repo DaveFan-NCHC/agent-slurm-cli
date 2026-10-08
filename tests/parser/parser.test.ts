@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   parseAccountingJob, parseArtifactList, parseClusterInfo, parseFairShare, parseHistory,
-  parseJobUsage, parseLiveUsage, parseQueueList, parseSubmittedJobId,
+  parseJobUsage, parseLiveUsage, parseNodeInfo, parseQueueList, parseSubmittedJobId,
 } from "../../src/slurm/parser.js";
 
 describe("Slurm parsers", () => {
@@ -47,6 +47,21 @@ describe("Slurm parsers", () => {
       node_state: "mix", cpus: { allocated: 8, idle: 24, other: 0, total: 32 },
       gres: ["gpu:a100:4", "nvme:1"],
     }]);
+  });
+  it("parses node-level resource information", () => {
+    expect(parseNodeInfo([
+      "gpu01|gpu*|up|mix|8/104/0/112|gpu:h200:8",
+      "gpu02|gpu|up|idle|0/112/0/112|(null)",
+    ].join("\n"))).toEqual([
+      {
+        node_name: "gpu01", partition: "gpu", availability: "up", state: "mix",
+        cpus: { allocated: 8, idle: 104, other: 0, total: 112 }, gres: ["gpu:h200:8"],
+      },
+      {
+        node_name: "gpu02", partition: "gpu", availability: "up", state: "idle",
+        cpus: { allocated: 0, idle: 112, other: 0, total: 112 }, gres: [],
+      },
+    ]);
   });
   it("parses accounting history rows", () => {
     const output = [

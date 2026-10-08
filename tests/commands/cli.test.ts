@@ -71,6 +71,7 @@ describe("CLI boundary", () => {
     ["artifact", "1", "--output", "/etc/passwd"],
     ["artifact", "1", "--path", "../../etc/passwd", "--overwrite", "true"],
     ["cluster-info", "--partition", "gpu"],
+    ["nodes", "--partition", "gpu"],
     ["wait", "1", "--poll-interval", "0"],
     ["history", "--days", "0"],
     ["history", "--state", "NOT_A_STATE"],
@@ -222,7 +223,7 @@ require_apptainer_for_generated_scripts: false
     }
   });
 
-  it("dispatches cluster-info and wait with structured JSON", async () => {
+  it("dispatches query commands with structured JSON", async () => {
     const root = mkdtempSync(join(tmpdir(), "slurm-agent-cli-query-"));
     try {
       writeFileSync(join(root, "key"), "test-key");
@@ -262,6 +263,15 @@ require_apptainer_for_generated_scripts: false
       expect(await main(["cluster-info"], env, clusterOutput, new Sink() as never, () => clusterRemote)).toBe(0);
       expect(JSON.parse(clusterOutput.value)).toMatchObject({
         ok: true, partitions: [{ partition: "p", nodes: 1, gres: [] }],
+      });
+
+      const nodesRemote = new QueryExecutor([
+        { stdout: "node01|p*|up|idle|0/8/0/8|gpu:h200:1\n", stderr: "", exitCode: 0 },
+      ]);
+      const nodesOutput = new Sink();
+      expect(await main(["nodes"], env, nodesOutput, new Sink() as never, () => nodesRemote)).toBe(0);
+      expect(JSON.parse(nodesOutput.value)).toMatchObject({
+        ok: true, nodes: [{ node_name: "node01", partition: "p", state: "idle", gres: ["gpu:h200:1"] }],
       });
 
       const historyRow = [

@@ -7,6 +7,7 @@ The public interface contains only these Slurm lifecycle operations:
 ```text
 slurm-agent submit
 slurm-agent cluster-info
+slurm-agent nodes
 slurm-agent list
 slurm-agent history
 slurm-agent fairshare
@@ -277,6 +278,7 @@ Other operations:
 
 ```bash
 slurm-agent cluster-info
+slurm-agent nodes
 slurm-agent list
 slurm-agent history --days 7 --state COMPLETED --limit 50
 slurm-agent fairshare
@@ -295,7 +297,7 @@ slurm-agent signal 12345 --signal USR1 --scope batch
 slurm-agent artifacts 12345
 ```
 
-`cluster-info` returns partition availability, time limit, node state, CPU counts, and configured GRES only for `allowed_partitions`. Active `list` and `status` results include available scheduling diagnostics such as pending reason, priority, actual or expected start time, submit time, time limit/remaining, allocated nodes, CPU/node counts, account, QOS, and reservation. For a pending job, `start_time` is Slurm's estimate and may be unavailable when the cluster does not use backfill scheduling. Completed `status` records return the corresponding retained accounting fields.
+`cluster-info` returns partition-level availability, time limit, node state, CPU counts, and configured GRES only for `allowed_partitions`. `nodes` returns the node name, partition, availability, state, CPU counts, and GRES for each node in those same policy-allowed partitions; it does not accept a caller-supplied partition. Active `list` and `status` results include available scheduling diagnostics such as pending reason, priority, actual or expected start time, submit time, time limit/remaining, allocated nodes, CPU/node counts, account, QOS, and reservation. For a pending job, `start_time` is Slurm's estimate and may be unavailable when the cluster does not use backfill scheduling. Completed `status` records return the corresponding retained accounting fields.
 
 `hold`, `release`, and `requeue` verify ownership before invoking the matching `scontrol` operation. A parent array ID applies to the whole owned array; an explicit task ID applies only to that task. `release` cannot remove an administrator hold. `requeue` restarts the batch script from the beginning with the same job ID.
 

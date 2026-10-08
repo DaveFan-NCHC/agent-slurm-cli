@@ -202,6 +202,28 @@ describe("Slurm client security boundaries", () => {
     });
   });
 
+  it("lists nodes only from policy-allowed partitions", async () => {
+    const remote = new MockExecutor([
+      ok("gpu01|slurm-test*|up|idle|0/112/0/112|gpu:h200:8\n"),
+    ]);
+    const client = new SlurmClient(remote, "alice", "/work", policy);
+    await expect(client.nodes()).resolves.toEqual([{
+      node_name: "gpu01", partition: "slurm-test", availability: "up", state: "idle",
+      cpus: { allocated: 0, idle: 112, other: 0, total: 112 }, gres: ["gpu:h200:8"],
+    }]);
+    expect(remote.commands[0]).toEqual({
+      executable: "sinfo",
+      args: ["--noheader", "--Node", "--partition=slurm-test", "--format=%N|%P|%a|%t|%C|%G"],
+      maxOutputBytes: 1048576,
+    });
+  });
+
+  it("rejects node rows outside policy-allowed partitions", async () => {
+    const remote = new MockExecutor([ok("gpu01|admin|up|idle|0/112/0/112|gpu:h200:8\n")]);
+    const client = new SlurmClient(remote, "alice", "/work", policy);
+    await expect(client.nodes()).rejects.toMatchObject({ code: "SLURM_QUERY_FAILED" });
+  });
+
   it("returns detailed active-job scheduling diagnostics", async () => {
     const row = [
       "44", "alice", "train", "slurm-test", "PENDING", "0:00", "Priority", "4512",

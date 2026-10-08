@@ -70,6 +70,20 @@ export interface PartitionInfo {
   gres: string[];
 }
 
+export interface NodeInfo {
+  node_name: string;
+  partition: string;
+  availability: string;
+  state: string;
+  cpus: {
+    allocated: number;
+    idle: number;
+    other: number;
+    total: number;
+  };
+  gres: string[];
+}
+
 export interface WaitResult {
   job: OwnedJob;
   terminal: boolean;
