@@ -1,6 +1,6 @@
 ---
 name: slurm-agent-operations
-description: "Operate jobs through the constrained slurm-agent CLI, including MPI/GPU resource placement, arrays and dependencies, filtered queue/history and node-resource inspection, pending-job diagnosis, fair-share inspection, safe job updates and signals, lifecycle controls, logs, and controlled artifact listing/downloads. Use for Slurm job lifecycle requests handled by this project; do not use it for cluster administration or generic SSH access."
+description: "Operate jobs through the constrained slurm-agent CLI, including staged input bundles, safe single/srun launchers, MPI/GPU resource placement, arrays and dependencies, filtered queue/history and node-resource inspection, pending-job diagnosis, fair-share inspection, safe job updates and signals, lifecycle controls, logs, and controlled artifact listing/downloads. Use for Slurm job lifecycle requests handled by this project; do not use it for cluster administration or generic SSH access."
 ---
 
 # Slurm Agent Operations
@@ -35,7 +35,8 @@ SLURM_SSH_KNOWN_HOSTS or SLURM_SSH_HOST_FINGERPRINT
 optional SLURM_SFTP_HOST, SLURM_SFTP_PORT, and SLURM_SFTP_USER for a dedicated transfer endpoint
 SLURM_SFTP_KNOWN_HOSTS or SLURM_SFTP_HOST_FINGERPRINT when the transfer endpoint needs separate host verification
 SLURM_REMOTE_WORKSPACE
-SLURM_LOCAL_JOB_WORKSPACE   contains Agent-generated scripts
+SLURM_LOCAL_JOB_WORKSPACE   contains Agent-generated scripts and staged inputs
+SLURM_REMOTE_SRUN_PATH      operator-controlled srun executable path
 SLURM_POLICY_PATH
 SLURM_LOCAL_ARTIFACTS     required for artifact downloads
 SLURM_AUDIT_LOG           optional; otherwise audit goes to stderr
@@ -47,7 +48,7 @@ Do not read or print credential files during ordinary operation. If configuratio
 
 `SLURM_REMOTE_WORKSPACE` must be a shared filesystem mounted at the same absolute path on the login node and all eligible compute nodes. Its `.slurm-agent/submissions`, logs, and artifacts are consumed on both sides.
 
-Policy-mapped Apptainer images and virtual environments must also be available with the same content at the same absolute path on the login and compute nodes. Shared storage is preferred, although identical per-node copies work. `SLURM_REMOTE_APPTAINER_PATH` may be node-local, but the executable must exist at that same path on every relevant node.
+Policy-mapped Apptainer images and virtual environments must also be available with the same content at the same absolute path on the login and compute nodes. Shared storage is preferred, although identical per-node copies work. `SLURM_REMOTE_APPTAINER_PATH` and, when enabled, `SLURM_REMOTE_SRUN_PATH` may be node-local, but each executable must exist at that same path on every relevant node.
 
 The CLI validates these paths only on the login node. If submission succeeds but the runner, image, virtual environment, log, or artifact path is missing when the job starts, report a likely compute-node mount/path mismatch to the operator; do not bypass the policy with another raw path.
 
@@ -73,6 +74,14 @@ slurm-agent submit \
 ```
 
 Defaults are one node, one task, one CPU per task, `1G`, and `01:00:00`. Resource values and the partition must remain within the configured policy. Record the returned `job_id`; use that ID, or an explicit array task ID such as `12345_7`, in later commands.
+
+Stage bounded regular files with repeatable `--input` options before the script path:
+
+```bash
+slurm-agent submit ... --input config/run.yaml --input src/model.py jobs/train.sh
+```
+
+Inputs must be safe relative paths below `SLURM_LOCAL_JOB_WORKSPACE`; never use absolute paths, traversal, symlinks, hard links, or special files. The payload reads `SLURM_AGENT_INPUT_DIR`. Apptainer receives `/inputs` read-only, while host/venv inputs are not protected from modification by the payload. Arrays share one bundle. Use the returned count/bytes/manifest hash for reporting; do not print input contents. If staging fails, do not retry `sbatch` manually or use another transfer mechanism.
 
 Submit an array only with bounded indexes and explicit concurrency when policy requires it:
 
@@ -113,10 +122,13 @@ The GPU forms are mutually exclusive. Per-node and per-task requests are bounded
 For MPI placement, use `--ntasks-per-node` only when requested and keep `ntasks <= nodes × ntasks-per-node`. Choose only one memory form:
 
 ```bash
-slurm-agent submit ... -N 2 -n 8 --ntasks-per-node 4 -c 2 --mem-per-cpu 2G
+slurm-agent submit ... -N 2 -n 8 --ntasks-per-node 4 -c 2 --mem-per-cpu 2G \
+  --launcher srun --mpi pmix --distribution block
 ```
 
 `--mem-per-cpu` is checked using the requested usable CPU count and cannot be combined with `--mem`. Use `--exclusive` only when the user needs exclusive nodes and policy permits it; combine exclusive allocation with bounded per-node `--mem`, since Slurm may allocate memory for every usable CPU on the node.
+
+The default `--launcher single` executes the payload once and preserves previous behavior even with `--ntasks > 1`. Select `srun` only when the user wants one payload execution per task and policy permits it. Never invent or pass raw `srun` flags; `--mpi` and `--distribution` accept only policy-approved values. Host `srun` starts each task before it enters host, venv, or Apptainer runtime. Treat Apptainer MPI compatibility as operator-validated cluster/image configuration. Each srun rank writes artifacts below `ranks/$SLURM_PROCID`; rank logs may interleave.
 
 Optionally select one policy-defined runtime alias:
 
@@ -192,7 +204,7 @@ Cancellation changes external state. Run it only when the user has requested can
 
 ## Artifacts
 
-Submission exports the job-specific `SLURM_AGENT_ARTIFACT_DIR` into the payload. A job script must place downloadable files beneath this directory:
+Submission exports the job-specific `SLURM_AGENT_ARTIFACT_DIR` into the payload. Under the srun launcher, it is rank-specific. A job script must place downloadable files beneath this directory:
 
 ```bash
 artifact_dir="$SLURM_AGENT_ARTIFACT_DIR"

@@ -4,7 +4,7 @@
 >
 > 文件更新日期：2026-10-08
 >
-> 專案狀態：核心安全批次作業 lifecycle 已完成；Priority 3～5 已實作，Priority 1～2 待辦。
+> 專案狀態：下一階段五項 Priority 均已實作並通過本地測試；尚待部署 cluster 驗證。
 
 ## 1. 專案目標
 
@@ -93,6 +93,7 @@ slurm-agent wait JOB_ID
 - nodes、tasks、CPU、memory、GPU/GRES、walltime 等有界資源請求。
 - account、QOS、constraint、nodelist、exclude、reservation 的 operator-defined aliases。
 - job arrays、array concurrency 與受限 dependency types。
+- submission-scoped input bundle，以及 backward-compatible `single` / policy-approved `srun` launcher。
 - Apptainer、virtualenv 或 policy 允許的 host runtime。
 - active queue、completed accounting history、單一 job status。
 - bounded queue/history filters、job scheduling diagnosis，以及 node memory/GRES/feature availability。
@@ -120,14 +121,16 @@ dependency
 time
 job-name
 apptainer-image / venv
+input files
+launcher / mpi / distribution
 script arguments
 ```
 
 重要限制：
 
-- `sbatch --ntasks` 只申請可供 job steps 使用的資源，不會自動啟動多個 tasks。
-- trusted runner 目前只執行一次 payload；MPI 或多節點程式仍需由 payload 與 cluster runtime 自行正確啟動。
-- submission 目前只上傳單一 script，不會一併 staging 程式碼、設定檔或資料集。
+- `--launcher single` 維持只執行一次 payload；`--launcher srun` 才會依 validated task placement 啟動 job step。
+- submission 可 staging policy-bounded inputs；它仍不是 generic file transfer。
+- Apptainer MPI 的 PMI/PMIx ABI 與 plugin 相容性仍需由 operator 在部署 cluster 驗證。
 
 ### 3.3 Query 的目前範圍
 
@@ -242,20 +245,20 @@ Audit event 應包含 timestamp、action、SSH user、job ID、resource summary�
 目前進度：
 
 ```text
-1. submission-scoped input bundle      待辦
-2. safe parallel launcher              待辦
+1. submission-scoped input bundle      已實作
+2. safe parallel launcher              已實作
 3. diagnose JOB_ID                     已實作
 4. list/history filters                已實作
 5. node memory/GPU availability        已實作
 ```
 
-依目前實作順序，三項 read-only query 功能先完成。下一步是 input bundle，再以其一致的 payload/input layout 完成 safe launcher。五項全部完成前，本 milestone 仍未結案。
+五項均已完成程式、policy、help、README、skill 與測試整合。本 milestone 的剩餘工作是實際部署 cluster 的 smoke/integration validation，不再有未實作 Priority。
 
-## 6. Priority 1：Submission-scoped input bundle
+## 6. Priority 1：Submission-scoped input bundle（已實作）
 
 ### 6.1 目的
 
-目前 submission 只上傳 script。新增受控 input staging，讓 job 可以攜帶程式碼、設定檔或小型輸入資料，但不開放 generic file transfer。
+原本 submission 只上傳 script；目前已新增受控 input staging，讓 job 可以攜帶程式碼、設定檔或小型輸入資料，但不開放 generic file transfer。
 
 目標介面：
 
@@ -266,13 +269,13 @@ slurm-agent submit [resources] \
   jobs/train.sh
 ```
 
-也可在後續評估單一 archive/bundle 形式，但第一版應選一種明確、容易驗證且沒有模糊覆寫語意的模式。
+第一版採 repeatable `--input`，保留安全 relative path，不提供 caller-defined destination 或 archive 解壓縮。
 
 ### 6.2 路徑與 runtime contract
 
 - 每個 input 都必須位於 `SLURM_LOCAL_JOB_WORKSPACE` 下。
 - 禁止 absolute path、`..`、symlink、device、FIFO、socket 與 hard-link ambiguity。
-- inputs 上傳到該次 UUID submission directory 的固定 `inputs/` 子目錄。
+- inputs 上傳到該次 UUID submission directory 的固定 `inputs/` 子目錄；每檔以 temporary file 加 atomic rename 完成。
 - destination relative path 由安全的 local relative path 決定，caller 不可指定任意 remote path。
 - payload 透過固定環境變數取得 input root，例如：
 
@@ -281,7 +284,7 @@ SLURM_AGENT_INPUT_DIR
 ```
 
 - Apptainer 將 input directory bind 到固定的唯讀 `/inputs`。
-- host/venv runtime 取得 job-specific remote input directory，但不得取得 transfer API。由於 payload 與 staged files 使用同一個 Unix identity，host/venv 模式不能宣稱具有和 read-only container mount 相同的防竄改保證；此限制必須明確文件化。
+- host/venv runtime 取得 job-specific remote input directory，但不得取得 transfer API。由於 payload 與 staged files 使用同一個 Unix identity，host/venv 模式不具和 read-only container mount 相同的防竄改保證。
 - array tasks 共用同一份 inputs。Apptainer 模式必須唯讀；host/venv 模式至少要避免 CLI 主動覆寫並清楚標示其非 sandbox 性質。
 
 ### 6.3 Policy
@@ -294,7 +297,7 @@ max_input_file_bytes: 104857600
 max_input_total_bytes: 536870912
 ```
 
-可再評估 allowlisted suffix、單檔 checksum requirement 或 operator-defined dataset aliases。所有 limits 預設應 fail closed。
+所有 limits 省略時預設為 `0`，因此 inputs fail closed。Allowlisted suffix、operator-defined dataset aliases 或 archive bundle 留待後續評估。
 
 ### 6.4 Output 與 audit
 
@@ -330,7 +333,7 @@ array sharing semantics
 manifest/hash stability
 ```
 
-## 7. Priority 2：Safe parallel launcher
+## 7. Priority 2：Safe parallel launcher（已實作）
 
 ### 7.1 目的
 
@@ -343,7 +346,7 @@ slurm-agent submit [resources] --launcher single jobs/train.sh
 slurm-agent submit [resources] --launcher srun jobs/mpi.sh
 ```
 
-`single` 保持目前語意。是否讓 `ntasks > 1` 時強制明確指定 launcher，需在實作前確定 migration policy；不得靜默改變既有 job 的執行次數。
+`single` 保持目前語意且為預設值；即使 `ntasks > 1` 也不靜默改變既有 job 的執行次數。需要每 task 執行 payload 時必須明確指定 `--launcher srun`。
 
 ### 7.2 Launcher contract
 
@@ -351,29 +354,26 @@ slurm-agent submit [resources] --launcher srun jobs/mpi.sh
 - `srun`：trusted runner 使用 operator-controlled `srun` executable 啟動 payload。
 - caller 不能傳入任意 `srun` flags。
 - task count、task placement、CPU/GPU binding 只能來自已驗證的 submit options 與 policy-defined enum/aliases。
-- 第一版應定義支援的 MPI mode，例如 `none` 或 policy allowlisted `pmix` variants；不可接受 raw plugin name。
-- 必須定義 single-node、multi-node、array 與 dependency jobs 的一致行為。
+- 第一版 MPI mode 只接受 policy allowlisted safe names，例如 `pmix` variants；不可接受 raw plugin flag 或任意 launcher argument。
+- single-node、multi-node、array 與 dependency jobs 共用同一 launcher contract。
 
-可能的 bounded options：
+第一版 bounded options：
 
 ```text
 --launcher single|srun
 --mpi ALIAS
 --distribution block|cyclic
---cpu-bind ALIAS
---gpu-bind ALIAS
 ```
 
-只有實際需要且能跨目標 cluster 穩定支援的項目才加入第一版。
+CPU/GPU raw bind flags未公開；`cpus-per-task` 與可選的 `gpus-per-task` 由 validated submit resources 傳給 trusted `srun`。
 
 ### 7.3 Container integration
 
-Apptainer 模式必須明確選擇並測試其中一種架構：
+Apptainer 模式採用以下架構：
 
-1. host `srun` 啟動每個 task，再由每個 task 進入 Apptainer；或
-2. container 內的 Slurm/MPI stack 啟動 tasks，並由 operator 保證 ABI/plugin 相容。
+1. host `srun` 啟動每個 task，再由每個 task 進入 Apptainer。
 
-優先選擇能由 CLI 控制 executable、避免依賴未知 image 內容、且可在部署 cluster 驗證的方式。不得假設任意 image 內都有可用且相容的 `srun`。
+`srun` executable 由 trusted `SLURM_REMOTE_SRUN_PATH` 決定，不假設 image 內有 `srun`。若 payload 本身使用 MPI，image 內 PMI/PMIx ABI/plugin 相容性仍由 operator 驗證。
 
 ### 7.4 Policy
 
@@ -385,7 +385,7 @@ allowed_mpi_modes: [pmix]
 allowed_distributions: [block, cyclic]
 ```
 
-若某欄位省略，相關進階能力預設停用。
+`allowed_launchers` 省略時預設只有 `single`；MPI modes 與 distributions 省略時預設停用。
 
 ### 7.5 驗收重點
 
@@ -404,7 +404,7 @@ logs and artifacts under multiple ranks
 partial task failure behavior
 ```
 
-多 rank artifact 寫入需要明確避免互相覆寫；可提供 rank-aware subdirectory contract，例如以 `SLURM_PROCID` 區分，但不得讓 caller 逃離 job artifact root。
+多 rank artifact 使用 `ranks/<SLURM_PROCID>/` 子目錄避免互相覆寫，且 caller 無法逃離 job artifact root。
 
 ## 8. Priority 3：`diagnose JOB_ID`（已實作）
 

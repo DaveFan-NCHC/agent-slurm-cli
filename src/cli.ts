@@ -24,6 +24,7 @@ import { runWait } from "./commands/wait.js";
 import { loadConfig } from "./config/loader.js";
 import { AgentError, ExitCode, invalid } from "./errors/errors.js";
 import { loadPolicy } from "./policy/loader.js";
+import { prepareInputBundle } from "./policy/input.js";
 import { prepareLocalScript } from "./policy/script.js";
 import {
   parsePositiveInteger, validateArrayView, validateHistorySort, validateHistoryWindow, validateJobId,
@@ -87,6 +88,10 @@ Submit options:
   -J, --job-name NAME
   --apptainer-image ALIAS
   --venv ALIAS
+  --input PATH          repeatable workspace-relative staged input
+  --launcher single|srun
+  --mpi MODE            policy-approved srun MPI mode
+  --distribution block|cyclic
 
 Output is JSON by default. Configuration is read from SLURM_* environment variables.
 Generic SSH or remote command execution is intentionally unavailable.`;
@@ -94,13 +99,19 @@ Generic SSH or remote command execution is intentionally unavailable.`;
 type Writer = Pick<NodeJS.WritableStream, "write">;
 type ExecutorFactory = (config: ReturnType<typeof loadConfig>["ssh"]) => RemoteExecutor;
 
-interface Parsed { command: string; positionals: string[]; options: Map<string, string> }
+interface Parsed {
+  command: string;
+  positionals: string[];
+  options: Map<string, string>;
+  repeatedOptions: Map<string, string[]>;
+}
 
 function parseArgs(argv: string[]): Parsed {
   if (argv.length === 0) throw invalid("A command is required. Use --help for usage.");
   const command = argv[0]!;
   const positionals: string[] = [];
   const options = new Map<string, string>();
+  const repeatedOptions = new Map<string, string[]>();
   let positionalMode = false;
   const shortOptions: Record<string, string> = {
     "-p": "partition", "-N": "nodes", "-n": "ntasks", "-c": "cpus-per-task", "-t": "time", "-J": "job-name",
@@ -133,21 +144,29 @@ function parseArgs(argv: string[]): Parsed {
     const key = rawKey === "memory" ? "mem" : rawKey;
     const value = equals >= 0 ? token.slice(equals + 1) : argv[++index];
     if (!key || value === undefined || (equals < 0 && value.startsWith("--"))) throw invalid(`Option --${key} requires a value.`);
+    if (key === "input") {
+      repeatedOptions.set(key, [...(repeatedOptions.get(key) ?? []), value]);
+      continue;
+    }
     if (options.has(key)) throw invalid(`Option --${key} may only be specified once.`);
     options.set(key, value);
   }
-  return { command, positionals, options };
+  return { command, positionals, options, repeatedOptions };
 }
 
 const submitOptions = [
   "partition", "nodes", "ntasks", "ntasks-per-node", "cpus-per-task", "mem", "mem-per-cpu",
   "gpus", "gpus-per-node", "gpus-per-task", "gres", "exclusive", "array", "dependency",
   "account", "qos", "constraint", "nodelist", "exclude", "reservation", "time", "job-name", "apptainer-image", "venv",
+  "launcher", "mpi", "distribution",
 ];
 
 function enforceSubmitShape(parsed: Parsed): void {
   const unknown = [...parsed.options.keys()].filter((key) => !submitOptions.includes(key));
-  if (unknown.length) throw invalid(`Unknown option(s): ${unknown.map((key) => `--${key}`).join(", ")}.`);
+  const unknownRepeated = [...parsed.repeatedOptions.keys()].filter((key) => key !== "input");
+  if (unknown.length || unknownRepeated.length) {
+    throw invalid(`Unknown option(s): ${[...unknown, ...unknownRepeated].map((key) => `--${key}`).join(", ")}.`);
+  }
   if (parsed.positionals.length < 1) throw invalid("Command submit requires a local SCRIPT path.");
   if (parsed.options.has("exclusive") && parsed.options.get("exclusive") !== "true") {
     throw invalid("--exclusive does not take a value.");
@@ -156,7 +175,10 @@ function enforceSubmitShape(parsed: Parsed): void {
 
 function enforceShape(parsed: Parsed, allowedOptions: string[], positionalCount: number): void {
   const unknown = [...parsed.options.keys()].filter((key) => !allowedOptions.includes(key));
-  if (unknown.length) throw invalid(`Unknown option(s): ${unknown.map((key) => `--${key}`).join(", ")}.`);
+  const unknownRepeated = [...parsed.repeatedOptions.keys()].filter((key) => !allowedOptions.includes(key));
+  if (unknown.length || unknownRepeated.length) {
+    throw invalid(`Unknown option(s): ${[...unknown, ...unknownRepeated].map((key) => `--${key}`).join(", ")}.`);
+  }
   if (parsed.positionals.length !== positionalCount) throw invalid(`Command ${parsed.command} expects ${positionalCount} positional argument(s).`);
 }
 
@@ -278,6 +300,9 @@ function parseSubmit(parsed: Parsed, policy: ReturnType<typeof loadPolicy>): Ret
     jobName: parsed.options.get("job-name"),
     apptainerImage: parsed.options.get("apptainer-image"),
     venv: parsed.options.get("venv"),
+    launcher: parsed.options.get("launcher"),
+    mpi: parsed.options.get("mpi"),
+    distribution: parsed.options.get("distribution"),
     scriptArgs: parsed.positionals.slice(1),
   };
   return validateSubmit(options, policy);
@@ -379,7 +404,7 @@ export async function main(
     executor = executorFactory(config.ssh);
     const client = new SlurmClient(
       executor, config.ssh.user, config.ssh.workspace, policy,
-      config.localArtifactsPath, config.remoteApptainerPath,
+      config.localArtifactsPath, config.remoteApptainerPath, config.remoteSrunPath,
     );
     const context = { client, audit, sshUser: config.ssh.user };
     let response: Record<string, unknown>;
@@ -494,10 +519,22 @@ export async function main(
           reservation: parsed.options.get("reservation"),
           array: parsed.options.get("array"), dependency: parsed.options.get("dependency"),
           apptainer_image: parsed.options.get("apptainer-image"), venv: parsed.options.get("venv"),
+          launcher: parsed.options.get("launcher") ?? "single",
+          mpi: parsed.options.get("mpi"), distribution: parsed.options.get("distribution"),
         };
         const submitOptions = parseSubmit(parsed, policy);
         const preparedScript = prepareLocalScript(config.localJobWorkspace, submitOptions.script, policy);
-        response = await runSubmit(context, submitOptions, preparedScript);
+        const preparedInputs = prepareInputBundle(
+          config.localJobWorkspace, parsed.repeatedOptions.get("input") ?? [], policy,
+        );
+        if (preparedInputs.files.length > 0) {
+          auditResources.inputs = {
+            files: preparedInputs.files.length,
+            bytes: preparedInputs.totalBytes,
+            manifest_sha256: preparedInputs.manifestSha256,
+          };
+        }
+        response = await runSubmit(context, submitOptions, preparedScript, preparedInputs);
         break;
       case "artifact": {
         jobId = validateJobId(parsed.positionals[0]!);

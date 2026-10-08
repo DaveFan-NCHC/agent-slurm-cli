@@ -309,21 +309,27 @@ export class SshExecutor implements RemoteExecutor {
     }
   }
 
-  async uploadSubmission({ content, remotePath, maxBytes }: SafeSubmissionUpload): Promise<{ bytes: number }> {
+  async uploadSubmission({
+    content, remotePath, maxBytes, mode = 0o600, label = "input",
+  }: SafeSubmissionUpload): Promise<{ bytes: number }> {
     if (content.length > maxBytes) {
-      throw new AgentError("SCRIPT_TOO_LARGE", `Job script exceeds policy maximum ${maxBytes} bytes.`, ExitCode.PolicyDenied);
+      throw new AgentError(
+        "RESOURCE_LIMIT_EXCEEDED", `${label} exceeds controlled upload maximum ${maxBytes} bytes.`, ExitCode.PolicyDenied,
+      );
     }
     const client = await this.connectForTransfer();
     const sftp = await new Promise<SFTPWrapper>((resolve, reject) => {
       client.sftp((error, session) => {
-        if (error) reject(new AgentError("SCRIPT_UPLOAD_FAILED", `Unable to start controlled script upload: ${error.message}`, ExitCode.SshFailure));
+        if (error) reject(new AgentError(
+          "SUBMISSION_UPLOAD_FAILED", `Unable to start controlled ${label} upload: ${error.message}`, ExitCode.SshFailure,
+        ));
         else resolve(session);
       });
     });
     const temporaryPath = `${remotePath}.part-${randomUUID()}`;
     let temporaryCreated = false;
     try {
-      const output = sftp.createWriteStream(temporaryPath, { flags: "wx", mode: 0o700 });
+      const output = sftp.createWriteStream(temporaryPath, { flags: "wx", mode });
       await once(output, "open");
       temporaryCreated = true;
       const controller = new AbortController();
@@ -332,7 +338,7 @@ export class SshExecutor implements RemoteExecutor {
         await pipeline(Readable.from(content), output, { signal: controller.signal });
       } catch (cause) {
         if (controller.signal.aborted) {
-          throw new AgentError("REMOTE_COMMAND_TIMEOUT", "Job script upload timed out.", ExitCode.SshFailure);
+          throw new AgentError("REMOTE_COMMAND_TIMEOUT", `Controlled ${label} upload timed out.`, ExitCode.SshFailure);
         }
         throw cause;
       } finally {
@@ -348,7 +354,9 @@ export class SshExecutor implements RemoteExecutor {
         await new Promise<void>((resolve) => sftp.unlink(temporaryPath, () => resolve()));
       }
       if (cause instanceof AgentError) throw cause;
-      throw new AgentError("SCRIPT_UPLOAD_FAILED", `Job script upload failed: ${(cause as Error).message}`, ExitCode.SshFailure);
+      throw new AgentError(
+        "SUBMISSION_UPLOAD_FAILED", `Controlled ${label} upload failed: ${(cause as Error).message}`, ExitCode.SshFailure,
+      );
     } finally {
       sftp.end();
     }

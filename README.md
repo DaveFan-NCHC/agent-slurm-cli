@@ -63,6 +63,7 @@ export SLURM_REMOTE_WORKSPACE=/home/slurm-agent/workspace
 export SLURM_LOCAL_JOB_WORKSPACE=/var/lib/slurm-agent/jobs
 export SLURM_LOCAL_ARTIFACTS=/var/lib/slurm-agent/artifacts
 export SLURM_REMOTE_APPTAINER_PATH=/usr/bin/apptainer
+export SLURM_REMOTE_SRUN_PATH=/usr/bin/srun
 export SLURM_POLICY_PATH=/etc/slurm-agent/policy.yaml
 export SLURM_AUDIT_LOG=/var/log/slurm-agent/audit.jsonl
 ```
@@ -153,10 +154,16 @@ max_wait_seconds: 86400
 max_history_days: 30
 max_history_jobs: 200
 max_list_jobs: 200
+max_input_files: 64
+max_input_file_bytes: 104857600
+max_input_total_bytes: 536870912
 max_array_tasks: 1000
 max_array_concurrency: 32
 max_dependency_jobs: 16
 allowed_dependency_types: [after, afterany, aftercorr, afternotok, afterok, singleton]
+allowed_launchers: [single, srun]
+allowed_mpi_modes: [pmix]
+allowed_distributions: [block, cyclic]
 max_artifact_files: 1000
 allowed_signals: [TERM, USR1, USR2]
 max_script_bytes: 65536
@@ -165,7 +172,7 @@ max_script_arg_length: 1024
 require_apptainer_for_generated_scripts: true
 ```
 
-Arrays, dependencies, MPI rank placement, per-node/per-task GPUs, exclusive nodes, and signals are opt-in for upgrades. Their limits, boolean, or allowlists default to disabled when omitted. Set bounded values explicitly to enable only the capabilities wanted by the operator.
+Input bundles, arrays, dependencies, `srun`, MPI modes, rank placement, per-node/per-task GPUs, exclusive nodes, and signals are opt-in for upgrades. Input limits default to zero, advanced launcher allowlists default to empty, and `allowed_launchers` defaults to `[single]`, preserving one payload execution per job. Set bounded values explicitly to enable only the capabilities wanted by the operator.
 
 Aliases are accepted from the CLI; raw image, virtualenv, GRES, account, QOS, constraint, included/excluded node-list, and reservation values are not. `max_gpus: 0` disables direct `--gpus` requests. Omitting one of the scheduler alias mappings disables that submit option.
 
@@ -179,6 +186,7 @@ Aliases are accepted from the CLI; raw image, virtualenv, GRES, account, QOS, co
 | `allowed_apptainer_images.*` | Must resolve to the same image at the same absolute path on the login node and every eligible compute node | The login node validates the image, while the compute node executes it with NVIDIA GPU support (`--nv`). A shared filesystem is recommended; an identically replicated image also works. |
 | `allowed_virtualenvs.*` | Must resolve to the same environment at the same absolute path on the login node and every eligible compute node | The login node validates `bin/python`, while the compute node runs the environment. A shared filesystem is recommended; an identical installation on every node also works. |
 | `SLURM_REMOTE_APPTAINER_PATH` | Must be executable at the same absolute path on the login node and every eligible compute node | It may be installed locally on each node and does not itself need to be on shared storage. |
+| `SLURM_REMOTE_SRUN_PATH` | Must be executable at the same absolute path on the login node and every eligible compute node when `srun` is enabled | The trusted runner invokes this operator-configured executable; callers cannot choose its path or flags. |
 
 Typical shared filesystems include NFS, Lustre, GPFS, and BeeGFS. A directory local only to the login node, such as its private `/tmp`, is not suitable for `SLURM_REMOTE_WORKSPACE` or a non-replicated runtime alias. The CLI can validate remote paths only on the login node before submission, so a missing compute-node mount may not be detected until the job starts.
 
@@ -205,8 +213,20 @@ slurm-agent submit \
 ```
 
 ```json
-{"ok":true,"job_id":"12345"}
+{"ok":true,"job_id":"12345","launcher":{"mode":"single"}}
 ```
+
+Stage bounded files from `SLURM_LOCAL_JOB_WORKSPACE` with repeatable `--input` options placed before the script path:
+
+```bash
+slurm-agent submit -p slurm-test \
+  --input config/run.yaml \
+  --input src/model.py \
+  --apptainer-image pytorch \
+  jobs/train.sh
+```
+
+Inputs keep their safe workspace-relative paths below a generated submission `inputs/` directory. The payload reads its input root from `SLURM_AGENT_INPUT_DIR`; Apptainer sees it as read-only `/inputs`. Host and virtualenv runtimes receive the job-specific remote directory, but those modes are not sandboxes: because the payload runs as the same Unix identity, it can modify staged files. Arrays share one staged input bundle. The response and audit event contain only file count, total bytes, and a deterministic manifest SHA-256, not file contents. A failed upload never reaches `sbatch`; an incomplete random staging directory is unusable and may later be removed by the operator's retention policy.
 
 Choose at most one runtime alias per submission:
 
@@ -219,8 +239,13 @@ MPI jobs can bound rank placement and memory per allocated CPU. `--mem` and `--m
 
 ```bash
 slurm-agent submit -p slurm-test -N 2 -n 8 --ntasks-per-node 4 \
-  -c 2 --mem-per-cpu 2G jobs/mpi.sh
+  -c 2 --mem-per-cpu 2G --launcher srun --mpi pmix \
+  --distribution block jobs/mpi.sh
 ```
+
+`--launcher single` is the backward-compatible default and executes the payload once even when `--ntasks` is greater than one. `--launcher srun` starts a job step with the validated node/task/CPU placement and optional per-task GPU count. The caller cannot supply raw `srun` flags: MPI modes and `block|cyclic` distributions must be operator-approved. The host `srun` starts each rank and each rank then enters the selected host, virtualenv, or Apptainer runtime. Apptainer MPI still requires the operator to validate the image's PMI/PMIx ABI and cluster integration.
+
+For `srun`, each rank receives a distinct artifact directory below `ranks/$SLURM_PROCID`; this prevents ranks from overwriting the same artifact name. `exec srun` preserves Slurm's aggregate exit status and normal signal/cancellation behavior. Rank output shares the job's Slurm stdout/stderr and may interleave.
 
 GPU resources can be requested by a policy-bounded total, per-node count, per-task count, or operator-defined GRES alias. Choose exactly one form:
 
@@ -267,7 +292,7 @@ slurm-agent submit -p slurm-test --dependency afterok:12345:12346,afternotok:123
 
 Dependency clauses are combined with AND. OR (`?`), offsets, arbitrary expressions, cross-user references, disallowed types, and more than `max_dependency_jobs` references are rejected. `allowed_dependency_types` controls the accepted subset of `after`, `afterany`, `aftercorr`, `afternotok`, `afterok`, and `singleton`. `aftercorr` requires the new submission to be an array; `singleton` requires an explicit `--job-name` so its serialization scope is deliberate.
 
-With the default secure policy, agent-generated scripts require an approved Apptainer alias. The CLI-generated runner forces execution through `--containall` and `--cleanenv`, mounts the remote workspace read-only, and mounts only that job's controlled artifact directory read-write. The agent script does not invoke Apptainer itself:
+With the default secure policy, agent-generated scripts require an approved Apptainer alias. The CLI-generated runner forces execution through `--containall` and `--cleanenv`, mounts the remote workspace and staged inputs read-only, and mounts only that job's controlled artifact directory read-write. The agent script does not invoke Apptainer itself:
 
 ```bash
 #!/bin/sh
@@ -378,16 +403,18 @@ If a remote Slurm command fails, the error object also includes a sanitized `slu
 ## Security model and limitations
 
 - Every remote command consists of a compile-time executable allowlist plus separately shell-quoted arguments; no shell fragments are accepted.
-- Job IDs, array specifications, dependencies, partition names, script segments, job names, resource units, and times use strict grammars. Unknown flags and duplicate flags are rejected.
+- Job IDs, array specifications, dependencies, partition names, script segments, job names, resource units, and times use strict grammars. Unknown flags and duplicate non-repeatable flags are rejected; repeated inputs must resolve to unique destinations.
 - Runtime and scheduler selection accepts only policy-defined logical aliases. Apptainer images must resolve to regular files; virtual environments must contain an executable `bin/python`. Raw runtime paths, account/QOS/constraint/reservation values, image URIs, bind mounts, and caller-provided commands are unavailable.
 - Agent scripts come only from `SLURM_LOCAL_JOB_WORKSPACE`; symlinks, traversal, oversized files, invalid UTF-8, missing shebangs, and embedded `#SBATCH` directives are rejected. The exact bytes are hashed before upload.
-- Upload destinations are random, CLI-generated directories below `.slurm-agent/submissions`; callers cannot select a remote destination. Payload and trusted runner uploads use temporary files followed by atomic rename.
+- Submission inputs also come only from `SLURM_LOCAL_JOB_WORKSPACE`; absolute/traversal paths, symlinks in any path component, hard links, special files, duplicates, and policy limit violations are rejected. Input bytes are read and hashed before any remote operation.
+- Upload destinations are random, CLI-generated directories below `.slurm-agent/submissions`; callers cannot select a remote destination. Payload, input, manifest, and trusted runner uploads use temporary files followed by atomic rename. `sbatch` runs only after every required upload succeeds.
+- `single` remains the default launcher. `srun` uses only the operator-configured executable and validated task placement, MPI, and distribution fields; no raw launcher arguments are exposed.
 - The batch environment exports only controlled `SLURM_AGENT_*` values, not the complete SSH process environment.
 - `cancel`, `hold`, `release`, `requeue`, `update`, `signal`, `status`, `diagnose`, `usage`, `wait`, `logs`, `artifacts`, and `artifact` confirm that Slurm reports the configured user as owner. Dependency references receive the same ownership check before submission or update. `list`, `history`, and `fairshare` fix their queries to that user and reject unexpected cross-user rows.
 - Script and log paths are checked with remote `realpath`, preventing traversal and symlink escape.
 - Artifact transfer is an internal, single-file SFTP stream after remote containment checks; it is not an SFTP browser. The destination is derived from trusted configuration and the job ID, and is created without overwrite.
 - Audit records never contain private keys, credentials, command stderr, or environment values.
-- The remote host needs GNU-compatible `realpath`, `test`, `mkdir`, `tail`, and `find`, plus `sbatch`, `squeue`, `sacct`, `scancel`, `scontrol`, `sinfo`, `sprio`, `sshare`, and `sstat` in its non-interactive PATH. `sprio` may return no factors on clusters without multifactor priority; this is a supported diagnose degradation.
+- The remote host needs GNU-compatible `realpath`, `test`, `mkdir`, `tail`, and `find`, plus `sbatch`, `squeue`, `sacct`, `scancel`, `scontrol`, `sinfo`, `sprio`, `sshare`, and `sstat` in its non-interactive PATH. `srun` is additionally required at `SLURM_REMOTE_SRUN_PATH` when that launcher is enabled. `sprio` may return no factors on clusters without multifactor priority; this is a supported diagnose degradation.
 - Cluster-wide enforcement still belongs in Slurm configuration such as account/QOS limits and `job_submit` policy; the CLI policy is an additional capability boundary, not a replacement for scheduler controls.
 - Completed-job lookup depends on Slurm accounting (`sacct`) retention and permissions. If no allocation record is visible, the CLI reports `JOB_NOT_FOUND`.
 - Live resource metrics depend on Slurm's `jobacct_gather` support. If `sstat` is unavailable for a running job, `usage` returns accounting data with `live_available: false`.

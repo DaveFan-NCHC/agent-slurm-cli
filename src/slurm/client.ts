@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
+import { posix } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { AgentError, ExitCode } from "../errors/errors.js";
 import { isContained, resolveLocalArtifactPath, resolveWorkspacePath } from "../policy/path.js";
 import type { PreparedScript } from "../policy/script.js";
+import type { PreparedInputBundle } from "../policy/input.js";
 import type { NormalizedSubmit, NormalizedUpdate, SignalScope } from "../policy/validator.js";
 import type { Policy } from "../policy/types.js";
 import type { RemoteExecutor, RemoteResult, SafeCommand } from "../transport/types.js";
@@ -71,6 +73,7 @@ export class SlurmClient {
     private readonly policy: Policy,
     private readonly localArtifactsPath?: string,
     private readonly remoteApptainerPath = "/usr/bin/apptainer",
+    private readonly remoteSrunPath = "/usr/bin/srun",
   ) {}
 
   private async run(command: SafeCommand): Promise<RemoteResult> { return this.executor.run(command); }
@@ -383,7 +386,12 @@ export class SlurmClient {
     return job;
   }
 
-  async submit(options: NormalizedSubmit, script: PreparedScript): Promise<string> {
+  async submit(
+    options: NormalizedSubmit,
+    script: PreparedScript,
+    inputs?: PreparedInputBundle,
+  ): Promise<string> {
+    const launcher = options.launcher ?? "single";
     if (this.policy.requireApptainerForGeneratedScripts && !options.apptainerImagePath) {
       throw new AgentError("RUNTIME_REQUIRED", "Policy requires an approved Apptainer image for agent-generated scripts.", ExitCode.PolicyDenied);
     }
@@ -398,6 +406,9 @@ export class SlurmClient {
     const apptainerExecutableReal = apptainerImageReal
       ? await this.realpath(this.remoteApptainerPath)
       : undefined;
+    const srunExecutableReal = launcher === "srun"
+      ? await this.realpath(this.remoteSrunPath)
+      : undefined;
     if (apptainerImageReal && !apptainerExecutableReal) {
       throw new AgentError("RUNTIME_NOT_FOUND", "Configured Apptainer executable does not exist.", ExitCode.General);
     }
@@ -408,10 +419,32 @@ export class SlurmClient {
         throw new AgentError("RUNTIME_NOT_FOUND", "Configured Apptainer executable is not executable.", ExitCode.General);
       }
     }
+    if (launcher === "srun" && !srunExecutableReal) {
+      throw new AgentError("RUNTIME_NOT_FOUND", "Configured srun executable does not exist.", ExitCode.General);
+    }
+    if (srunExecutableReal) {
+      validateExportPath(srunExecutableReal, "srun executable");
+      const executable = await this.run({ executable: "test", args: ["-x", srunExecutableReal] });
+      if (executable.exitCode !== 0) {
+        throw new AgentError("RUNTIME_NOT_FOUND", "Configured srun executable is not executable.", ExitCode.General);
+      }
+    }
     const logDirectory = `${workspaceReal}/.slurm-agent/logs`;
     const artifactRoot = `${workspaceReal}/.slurm-agent/artifacts`;
     const submissionDirectory = `${workspaceReal}/.slurm-agent/submissions/${randomUUID()}`;
-    const mkdir = await this.run({ executable: "mkdir", args: ["-p", "-m", "700", "--", logDirectory, artifactRoot, submissionDirectory] });
+    const inputDirectory = `${submissionDirectory}/inputs`;
+    const inputDirectories = new Set([inputDirectory]);
+    for (const input of inputs?.files ?? []) {
+      let parent = posix.dirname(input.relativePath);
+      while (parent !== ".") {
+        inputDirectories.add(`${inputDirectory}/${parent}`);
+        parent = posix.dirname(parent);
+      }
+    }
+    const mkdir = await this.run({
+      executable: "mkdir",
+      args: ["-p", "-m", "700", "--", logDirectory, artifactRoot, submissionDirectory, ...inputDirectories],
+    });
     if (mkdir.exitCode !== 0) failure(mkdir, "SLURM_SUBMIT_FAILED", "Unable to create controlled output directories.");
     const logDirectoryReal = await this.realpath(logDirectory);
     if (!logDirectoryReal || !isContained(workspaceReal, logDirectoryReal)) {
@@ -427,11 +460,52 @@ export class SlurmClient {
     }
     const payloadPath = `${submissionDirectoryReal}/payload`;
     const runnerPath = `${submissionDirectoryReal}/runner`;
-    await this.executor.uploadSubmission({ content: script.content, remotePath: payloadPath, maxBytes: this.policy.maxScriptBytes });
+    const inputDirectoryReal = `${submissionDirectoryReal}/inputs`;
+    await this.executor.uploadSubmission({
+      content: script.content, remotePath: payloadPath, maxBytes: this.policy.maxScriptBytes,
+      mode: 0o700, label: "payload",
+    });
+    for (const input of inputs?.files ?? []) {
+      await this.executor.uploadSubmission({
+        content: input.content,
+        remotePath: resolveWorkspacePath(inputDirectoryReal, input.relativePath),
+        maxBytes: this.policy.maxInputFileBytes,
+        mode: 0o600,
+        label: "input",
+      });
+    }
+    if (inputs && inputs.files.length > 0) {
+      await this.executor.uploadSubmission({
+        content: inputs.manifest,
+        remotePath: `${submissionDirectoryReal}/input-manifest.json`,
+        maxBytes: inputs.manifest.length,
+        mode: 0o600,
+        label: "manifest",
+      });
+    }
     const runner = Buffer.from(TRUSTED_RUNNER, "utf8");
-    await this.executor.uploadSubmission({ content: runner, remotePath: runnerPath, maxBytes: runner.length });
+    await this.executor.uploadSubmission({
+      content: runner, remotePath: runnerPath, maxBytes: runner.length, mode: 0o700, label: "runner",
+    });
     const exportedEnvironment = [`SLURM_AGENT_ARTIFACT_ROOT=${artifactRootReal}`];
     exportedEnvironment.push(`SLURM_AGENT_PAYLOAD=${payloadPath}`);
+    exportedEnvironment.push(`SLURM_AGENT_INPUT_DIR=${inputDirectoryReal}`);
+    exportedEnvironment.push(`SLURM_AGENT_RUNNER=${runnerPath}`);
+    exportedEnvironment.push(`SLURM_AGENT_LAUNCHER=${launcher}`);
+    exportedEnvironment.push(`SLURM_AGENT_NODES=${options.nodes}`);
+    exportedEnvironment.push(`SLURM_AGENT_NTASKS=${options.ntasks}`);
+    exportedEnvironment.push(`SLURM_AGENT_CPUS_PER_TASK=${options.cpusPerTask}`);
+    if (options.ntasksPerNode !== undefined) {
+      exportedEnvironment.push(`SLURM_AGENT_NTASKS_PER_NODE=${options.ntasksPerNode}`);
+    }
+    if (options.gpusPerTask !== undefined) {
+      exportedEnvironment.push(`SLURM_AGENT_GPUS_PER_TASK=${options.gpusPerTask}`);
+    }
+    if (options.mpi !== undefined) exportedEnvironment.push(`SLURM_AGENT_MPI_MODE=${options.mpi}`);
+    if (options.distribution !== undefined) {
+      exportedEnvironment.push(`SLURM_AGENT_DISTRIBUTION=${options.distribution}`);
+    }
+    if (srunExecutableReal) exportedEnvironment.push(`SLURM_AGENT_SRUN_EXECUTABLE=${srunExecutableReal}`);
     const runtimeKind = apptainerImageReal ? "apptainer" : venvReal ? "venv" : "host";
     exportedEnvironment.push(`SLURM_AGENT_RUNTIME_KIND=${runtimeKind}`);
     if (apptainerImageReal) exportedEnvironment.push(`SLURM_AGENT_APPTAINER_IMAGE=${apptainerImageReal}`);

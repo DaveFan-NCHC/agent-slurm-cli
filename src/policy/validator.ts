@@ -28,6 +28,9 @@ export interface SubmitOptions {
   jobName?: string;
   apptainerImage?: string;
   venv?: string;
+  launcher?: string;
+  mpi?: string;
+  distribution?: string;
   scriptArgs: string[];
 }
 
@@ -46,6 +49,7 @@ export interface NormalizedSubmit extends SubmitOptions {
   arrayTaskCount?: number;
   arrayConcurrency?: number;
   dependencyJobIds?: string[];
+  launcher: "single" | "srun";
 }
 
 export interface UpdateOptions {
@@ -371,6 +375,29 @@ export function validateSubmit(options: SubmitOptions, policy: Policy): Normaliz
   const reservationValue = resolvePolicyAlias(
     options.reservation, policy.allowedReservations, "Reservation", "RESERVATION_ALIAS_NOT_ALLOWED",
   );
+  const launcher = options.launcher ?? "single";
+  if (launcher !== "single" && launcher !== "srun") {
+    throw invalid("--launcher must be single or srun.");
+  }
+  if (!policy.allowedLaunchers.includes(launcher)) {
+    throw policyDenied("LAUNCHER_NOT_ALLOWED", `Launcher ${launcher} is not permitted.`);
+  }
+  if (options.mpi !== undefined) {
+    if (launcher !== "srun") throw invalid("--mpi requires --launcher srun.");
+    if (!runtimeAliasPattern.test(options.mpi)) throw invalid("--mpi must be a safe MPI mode name.");
+    if (!policy.allowedMpiModes.includes(options.mpi)) {
+      throw policyDenied("MPI_MODE_NOT_ALLOWED", `MPI mode ${options.mpi} is not permitted.`);
+    }
+  }
+  if (options.distribution !== undefined) {
+    if (launcher !== "srun") throw invalid("--distribution requires --launcher srun.");
+    if (options.distribution !== "block" && options.distribution !== "cyclic") {
+      throw invalid("--distribution must be block or cyclic.");
+    }
+    if (!policy.allowedDistributions.includes(options.distribution)) {
+      throw policyDenied("DISTRIBUTION_NOT_ALLOWED", `Distribution ${options.distribution} is not permitted.`);
+    }
+  }
   const array = validateArray(options.array, policy);
   const dependency = validateDependency(options.dependency, policy);
   if (dependency.types?.includes("aftercorr") && !options.array) {
@@ -477,7 +504,7 @@ export function validateSubmit(options: SubmitOptions, policy: Policy): Normaliz
     ...options, memoryGb, timeMinutes, apptainerImagePath, venvPath, gresValue,
     accountValue, qosValue, constraintValue, nodelistValue, excludeValue, reservationValue,
     arrayTaskCount: array.taskCount, arrayConcurrency: array.concurrency,
-    dependencyJobIds: dependency.jobIds,
+    dependencyJobIds: dependency.jobIds, launcher,
   };
 }
 

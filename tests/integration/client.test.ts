@@ -1,15 +1,20 @@
 import { describe, expect, it } from "vitest";
 import { SlurmClient } from "../../src/slurm/client.js";
 import type { Policy } from "../../src/policy/types.js";
-import type { RemoteExecutor, RemoteResult, SafeCommand } from "../../src/transport/types.js";
+import type {
+  RemoteExecutor, RemoteResult, SafeCommand, SafeSubmissionUpload,
+} from "../../src/transport/types.js";
 
 const policy: Policy = {
   allowedPartitions: ["slurm-test"], maxNodes: 2, maxNtasks: 16, maxNtasksPerNode: 8, maxCpusPerTask: 8,
   maxMemoryGb: 64, maxGpus: 4, maxGpusPerNode: 4, maxGpusPerTask: 2, allowExclusive: true,
   maxTimeMinutes: 240, maxWaitSeconds: 3600,
   maxHistoryDays: 30, maxHistoryJobs: 200, maxListJobs: 200,
+  maxInputFiles: 64, maxInputFileBytes: 104857600, maxInputTotalBytes: 536870912,
   maxArrayTasks: 1000, maxArrayConcurrency: 32, maxDependencyJobs: 16,
   allowedDependencyTypes: ["after", "afterany", "aftercorr", "afternotok", "afterok", "singleton"],
+  allowedLaunchers: ["single", "srun"], allowedMpiModes: ["pmix"],
+  allowedDistributions: ["block", "cyclic"],
   maxLogLines: 1000, maxLogBytes: 1024,
   maxArtifactBytes: 4096, maxArtifactFiles: 100, allowedSignals: ["TERM", "USR1"],
   allowedApptainerImages: { pytorch: "/opt/apptainer/pytorch.sif" },
@@ -26,7 +31,7 @@ const policy: Policy = {
 class MockExecutor implements RemoteExecutor {
   readonly commands: SafeCommand[] = [];
   readonly downloads: Array<{ remotePath: string; localPath: string; maxBytes: number }> = [];
-  readonly uploads: Array<{ remotePath: string; content: Buffer; maxBytes: number }> = [];
+  readonly uploads: SafeSubmissionUpload[] = [];
   constructor(private readonly results: RemoteResult[]) {}
   async run(command: SafeCommand): Promise<RemoteResult> {
     this.commands.push(command);
@@ -38,11 +43,19 @@ class MockExecutor implements RemoteExecutor {
     this.downloads.push({ remotePath, localPath, maxBytes });
     return { bytes: 5 };
   }
-  async uploadSubmission({ remotePath, content, maxBytes }: { remotePath: string; content: Buffer; maxBytes: number }): Promise<{ bytes: number }> {
-    this.uploads.push({ remotePath, content, maxBytes });
+  async uploadSubmission(upload: SafeSubmissionUpload): Promise<{ bytes: number }> {
+    const { remotePath, content } = upload;
+    this.uploads.push(upload);
     return { bytes: content.length };
   }
   async close(): Promise<void> {}
+}
+
+class FailingInputExecutor extends MockExecutor {
+  override async uploadSubmission(upload: SafeSubmissionUpload): Promise<{ bytes: number }> {
+    if (upload.label === "input") throw new Error("simulated input upload failure");
+    return super.uploadSubmission(upload);
+  }
 }
 
 const ok = (stdout = ""): RemoteResult => ({ stdout, stderr: "", exitCode: 0 });
@@ -67,6 +80,83 @@ describe("Slurm client security boundaries", () => {
     expect(submit.args.slice(-2)).toEqual(["--epochs", "20"]);
     expect(remote.uploads).toHaveLength(2);
     expect(remote.uploads[0]?.remotePath).toBe("/work/.slurm-agent/submissions/staged/payload");
+  });
+
+  it("stages nested inputs and a final stable manifest before submission", async () => {
+    const remote = new MockExecutor([
+      ok("/work\n"), ok(), ok("/work/.slurm-agent/logs\n"),
+      ok("/work/.slurm-agent/artifacts\n"), ok("/work/.slurm-agent/submissions/staged\n"), ok("12345\n"),
+    ]);
+    const client = new SlurmClient(remote, "alice", "/work", policy);
+    const manifest = Buffer.from('{"version":1,"files":[]}\n');
+    await client.submit({
+      script: "jobs/test.sh", partition: "slurm-test", nodes: 1, ntasks: 1, cpusPerTask: 1,
+      memory: "1G", time: "00:10:00", memoryGb: 1, timeMinutes: 10,
+      launcher: "single", scriptArgs: [],
+    }, prepared, {
+      files: [
+        { content: Buffer.from("model"), relativePath: "src/model.py", bytes: 5, sha256: "a".repeat(64) },
+        { content: Buffer.from("x: 1\n"), relativePath: "config/run.yaml", bytes: 5, sha256: "b".repeat(64) },
+      ],
+      totalBytes: 10, manifest, manifestSha256: "c".repeat(64),
+    });
+
+    expect(remote.uploads.map((upload) => upload.label)).toEqual([
+      "payload", "input", "input", "manifest", "runner",
+    ]);
+    expect(remote.uploads[1]).toMatchObject({ remotePath: expect.stringMatching(/\/inputs\/src\/model\.py$/), mode: 0o600 });
+    expect(remote.uploads[2]).toMatchObject({ remotePath: expect.stringMatching(/\/inputs\/config\/run\.yaml$/), mode: 0o600 });
+    expect(remote.uploads[3]).toMatchObject({ remotePath: expect.stringMatching(/\/input-manifest\.json$/), mode: 0o600 });
+    const mkdir = remote.commands.find((command) => command.executable === "mkdir")!;
+    expect(mkdir.args.some((argument) => argument.endsWith("/inputs/src"))).toBe(true);
+    expect(mkdir.args.some((argument) => argument.endsWith("/inputs/config"))).toBe(true);
+    expect(remote.commands.at(-1)?.args.find((argument) => argument.startsWith("--export=")))
+      .toContain("SLURM_AGENT_INPUT_DIR=/work/.slurm-agent/submissions/staged/inputs");
+  });
+
+  it("never submits a job after a partial input upload", async () => {
+    const remote = new FailingInputExecutor([
+      ok("/work\n"), ok(), ok("/work/.slurm-agent/logs\n"),
+      ok("/work/.slurm-agent/artifacts\n"), ok("/work/.slurm-agent/submissions/staged\n"),
+    ]);
+    const client = new SlurmClient(remote, "alice", "/work", policy);
+    await expect(client.submit({
+      script: "jobs/test.sh", partition: "slurm-test", nodes: 1, ntasks: 1, cpusPerTask: 1,
+      memory: "1G", time: "00:10:00", memoryGb: 1, timeMinutes: 10,
+      launcher: "single", scriptArgs: [],
+    }, prepared, {
+      files: [{ content: Buffer.from("x"), relativePath: "data/x.bin", bytes: 1, sha256: "a".repeat(64) }],
+      totalBytes: 1, manifest: Buffer.from("{}\n"), manifestSha256: "b".repeat(64),
+    })).rejects.toThrow("simulated input upload failure");
+    expect(remote.commands.some((command) => command.executable === "sbatch")).toBe(false);
+    expect(remote.uploads.map((upload) => upload.label)).toEqual(["payload"]);
+  });
+
+  it("exports only validated srun launcher settings", async () => {
+    const remote = new MockExecutor([
+      ok("/work\n"), ok("/usr/bin/srun\n"), ok(), ok(),
+      ok("/work/.slurm-agent/logs\n"), ok("/work/.slurm-agent/artifacts\n"),
+      ok("/work/.slurm-agent/submissions/staged\n"), ok("12345\n"),
+    ]);
+    const client = new SlurmClient(remote, "alice", "/work", policy);
+    await client.submit({
+      script: "jobs/test.sh", partition: "slurm-test", nodes: 2, ntasks: 4, ntasksPerNode: 2,
+      cpusPerTask: 2, memory: "8G", time: "00:10:00", memoryGb: 8, timeMinutes: 10,
+      gpusPerTask: 1, launcher: "srun", mpi: "pmix", distribution: "block", scriptArgs: [],
+    }, prepared);
+
+    expect(remote.commands[1]).toEqual({ executable: "realpath", args: ["-e", "--", "/usr/bin/srun"] });
+    expect(remote.commands[2]).toEqual({ executable: "test", args: ["-x", "/usr/bin/srun"] });
+    const exported = remote.commands.at(-1)?.args.find((argument) => argument.startsWith("--export="));
+    expect(exported).toContain("SLURM_AGENT_LAUNCHER=srun");
+    expect(exported).toContain("SLURM_AGENT_SRUN_EXECUTABLE=/usr/bin/srun");
+    expect(exported).toContain("SLURM_AGENT_NODES=2");
+    expect(exported).toContain("SLURM_AGENT_NTASKS=4");
+    expect(exported).toContain("SLURM_AGENT_CPUS_PER_TASK=2");
+    expect(exported).toContain("SLURM_AGENT_NTASKS_PER_NODE=2");
+    expect(exported).toContain("SLURM_AGENT_GPUS_PER_TASK=1");
+    expect(exported).toContain("SLURM_AGENT_MPI_MODE=pmix");
+    expect(exported).toContain("SLURM_AGENT_DISTRIBUTION=block");
   });
 
   it("exposes bounded sanitized sbatch diagnostics when submission is rejected", async () => {

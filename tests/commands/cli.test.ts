@@ -79,6 +79,7 @@ describe("CLI boundary", () => {
     ["update", "1"],
     ["signal", "1", "--signal", "TERM", "--scope", "children"],
     ["submit", "--partition", "p", "--exclusive=false", "jobs/a.sh"],
+    ["list", "--input", "data.bin"],
   ])("rejects unexpected command options before loading credentials", async (...argv) => {
     const stdout = new Sink();
     const code = await main(argv, {}, stdout);
@@ -90,7 +91,11 @@ describe("CLI boundary", () => {
     const root = mkdtempSync(join(tmpdir(), "slurm-agent-cli-"));
     try {
       mkdirSync(join(root, "jobs"));
+      mkdirSync(join(root, "config"));
+      mkdirSync(join(root, "src"));
       writeFileSync(join(root, "jobs", "train.sh"), "#!/bin/sh\necho train\n");
+      writeFileSync(join(root, "config", "run.yaml"), "x: 1\n");
+      writeFileSync(join(root, "src", "model.py"), "model\n");
       writeFileSync(join(root, "key"), "test-key");
       writeFileSync(join(root, "known_hosts"), "host ssh-ed25519 AAAA\n");
       writeFileSync(join(root, "policy.yaml"), `
@@ -108,6 +113,9 @@ max_time_minutes: 60
 max_wait_seconds: 60
 max_history_days: 30
 max_history_jobs: 100
+max_input_files: 4
+max_input_file_bytes: 1024
+max_input_total_bytes: 2048
 max_array_tasks: 100
 max_array_concurrency: 10
 max_dependency_jobs: 8
@@ -135,7 +143,8 @@ require_apptainer_for_generated_scripts: false
           "--mem-per-cpu", "1G", "--gpus-per-node", "1",
           "-A", "research", "--qos", "standard", "-C", "modern", "-w", "gpu-a",
           "-x", "maintenance", "--reservation", "workshop",
-          "--array", "0-3%2", "-t", "00:10:00", "jobs/train.sh", "--epochs", "2"],
+          "--array", "0-3%2", "-t", "00:10:00",
+          "--input", "config/run.yaml", "--input=src/model.py", "jobs/train.sh", "--epochs", "2"],
         {
           SLURM_SSH_HOST: "host", SLURM_SSH_USER: "alice", SLURM_SSH_KEY_PATH: join(root, "key"),
           SLURM_SSH_KNOWN_HOSTS: join(root, "known_hosts"), SLURM_REMOTE_WORKSPACE: "/work",
@@ -148,6 +157,7 @@ require_apptainer_for_generated_scripts: false
       expect(code).toBe(0);
       expect(JSON.parse(stdout.value)).toMatchObject({
         ok: true, job_id: "12345", array: { spec: "0-3%2", task_count: 4, concurrency: 2 },
+        launcher: { mode: "single" }, inputs: { files: 2, bytes: 11 },
       });
       expect(remote.commands.at(-1)?.args.slice(-2)).toEqual(["--epochs", "2"]);
       expect(remote.commands.at(-1)?.args).toContain("--ntasks-per-node=1");
@@ -161,7 +171,10 @@ require_apptainer_for_generated_scripts: false
       expect(remote.commands.at(-1)?.args).toContain("--exclude=gpu[03,07-09]");
       expect(remote.commands.at(-1)?.args).toContain("--reservation=ws2026");
       expect(remote.commands.at(-1)?.args).toContain("--output=/work/.slurm-agent/logs/%A_%a.out");
-      expect(remote.uploads).toHaveLength(2);
+      expect(remote.uploads).toHaveLength(5);
+      expect(remote.uploads.map((upload) => upload.label)).toEqual([
+        "payload", "input", "input", "manifest", "runner",
+      ]);
 
       const dependencyRemote = new QueryExecutor([
         { stdout: "77|alice|prepare|p|RUNNING|00:01\n", stderr: "", exitCode: 0 },

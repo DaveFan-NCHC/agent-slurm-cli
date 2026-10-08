@@ -14,10 +14,16 @@ export interface Policy {
   maxHistoryDays: number;
   maxHistoryJobs: number;
   maxListJobs: number;
+  maxInputFiles: number;
+  maxInputFileBytes: number;
+  maxInputTotalBytes: number;
   maxArrayTasks: number;
   maxArrayConcurrency: number;
   maxDependencyJobs: number;
   allowedDependencyTypes: string[];
+  allowedLaunchers: string[];
+  allowedMpiModes: string[];
+  allowedDistributions: string[];
   maxLogLines: number;
   maxLogBytes: number;
   maxArtifactBytes: number;

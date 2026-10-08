@@ -16,8 +16,11 @@ const policy: Policy = {
   maxMemoryGb: 64, maxGpus: 4, maxGpusPerNode: 4, maxGpusPerTask: 2, allowExclusive: true,
   maxTimeMinutes: 240, maxWaitSeconds: 3600,
   maxHistoryDays: 30, maxHistoryJobs: 200, maxListJobs: 200,
+  maxInputFiles: 64, maxInputFileBytes: 104857600, maxInputTotalBytes: 536870912,
   maxArrayTasks: 1000, maxArrayConcurrency: 32, maxDependencyJobs: 16,
   allowedDependencyTypes: ["after", "afterany", "aftercorr", "afternotok", "afterok", "singleton"],
+  allowedLaunchers: ["single", "srun"], allowedMpiModes: ["pmix"],
+  allowedDistributions: ["block", "cyclic"],
   maxLogLines: 1000, maxLogBytes: 1048576,
   maxArtifactBytes: 104857600, maxArtifactFiles: 1000, allowedSignals: ["TERM", "USR1"],
   allowedApptainerImages: { pytorch: "/opt/apptainer/pytorch.sif" },
@@ -67,6 +70,27 @@ describe("workspace paths", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("parallel launcher policy", () => {
+  it("preserves the single launcher default", () => {
+    expect(validateSubmit(valid, policy)).toMatchObject({ launcher: "single" });
+  });
+
+  it("accepts only policy-approved srun modes and distributions", () => {
+    expect(validateSubmit({ ...valid, launcher: "srun", mpi: "pmix", distribution: "block" }, policy))
+      .toMatchObject({ launcher: "srun", mpi: "pmix", distribution: "block" });
+    expect(() => validateSubmit({ ...valid, launcher: "srun", mpi: "pmi2" }, policy))
+      .toThrowError(expect.objectContaining({ code: "MPI_MODE_NOT_ALLOWED" }));
+    expect(() => validateSubmit({ ...valid, launcher: "srun", distribution: "arbitrary" }, policy)).toThrow();
+  });
+
+  it("rejects launcher-only options with single mode and disabled srun", () => {
+    expect(() => validateSubmit({ ...valid, mpi: "pmix" }, policy)).toThrow();
+    expect(() => validateSubmit(
+      { ...valid, launcher: "srun" }, { ...policy, allowedLaunchers: ["single"] },
+    )).toThrowError(expect.objectContaining({ code: "LAUNCHER_NOT_ALLOWED" }));
   });
 });
 

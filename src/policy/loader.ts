@@ -9,7 +9,9 @@ const keys = [
   "max_memory_gb", "max_gpus", "max_gpus_per_node", "max_gpus_per_task", "allow_exclusive",
   "max_time_minutes", "max_wait_seconds", "max_log_lines", "max_log_bytes",
   "max_history_days", "max_history_jobs", "max_list_jobs",
+  "max_input_files", "max_input_file_bytes", "max_input_total_bytes",
   "max_array_tasks", "max_array_concurrency", "max_dependency_jobs", "allowed_dependency_types",
+  "allowed_launchers", "allowed_mpi_modes", "allowed_distributions",
   "max_artifact_bytes", "max_artifact_files", "allowed_signals",
   "allowed_apptainer_images", "allowed_virtualenvs", "allowed_gres",
   "allowed_accounts", "allowed_qos", "allowed_constraints", "allowed_nodelists",
@@ -24,6 +26,9 @@ const supportedDependencyTypes = new Set([
   "after", "afterany", "aftercorr", "afternotok", "afterok", "singleton",
 ]);
 const supportedSignals = new Set(["HUP", "INT", "QUIT", "TERM", "USR1", "USR2", "CONT"]);
+const supportedLaunchers = new Set(["single", "srun"]);
+const supportedDistributions = new Set(["block", "cyclic"]);
+const supportedMpiMode = /^(?:none|pmi2|pmix(?:_v[1-9]\d*)?)$/;
 
 function positive(value: unknown, key: string, defaultValue?: number): number {
   const resolved = value ?? defaultValue;
@@ -172,6 +177,35 @@ function signalNames(value: unknown): string[] {
   return normalized as string[];
 }
 
+function supportedNames(
+  value: unknown,
+  key: string,
+  supported: ReadonlySet<string>,
+  defaultValue: string[] = [],
+): string[] {
+  const resolved = value ?? defaultValue;
+  if (!Array.isArray(resolved) ||
+      resolved.some((entry) => typeof entry !== "string" || !supported.has(entry)) ||
+      new Set(resolved).size !== resolved.length) {
+    throw new AgentError("CONFIGURATION_ERROR", `${key} must contain unique supported values.`, ExitCode.General);
+  }
+  return resolved as string[];
+}
+
+function mpiModes(value: unknown): string[] {
+  const resolved = value ?? [];
+  if (!Array.isArray(resolved) ||
+      resolved.some((entry) => typeof entry !== "string" || !supportedMpiMode.test(entry)) ||
+      new Set(resolved).size !== resolved.length) {
+    throw new AgentError(
+      "CONFIGURATION_ERROR",
+      "allowed_mpi_modes must contain unique supported values: none, pmi2, pmix, or pmix_vN.",
+      ExitCode.General,
+    );
+  }
+  return resolved as string[];
+}
+
 export function loadPolicy(path: string): Policy {
   let raw: unknown;
   try {
@@ -207,10 +241,18 @@ export function loadPolicy(path: string): Policy {
     maxHistoryDays: positive(data.max_history_days, "max_history_days", 30),
     maxHistoryJobs: positive(data.max_history_jobs, "max_history_jobs", 200),
     maxListJobs: positive(data.max_list_jobs, "max_list_jobs", 200),
+    maxInputFiles: nonNegative(data.max_input_files, "max_input_files", 0),
+    maxInputFileBytes: nonNegative(data.max_input_file_bytes, "max_input_file_bytes", 0),
+    maxInputTotalBytes: nonNegative(data.max_input_total_bytes, "max_input_total_bytes", 0),
     maxArrayTasks: nonNegative(data.max_array_tasks, "max_array_tasks", 0),
     maxArrayConcurrency: nonNegative(data.max_array_concurrency, "max_array_concurrency", 0),
     maxDependencyJobs: nonNegative(data.max_dependency_jobs, "max_dependency_jobs", 0),
     allowedDependencyTypes: dependencyTypes(data.allowed_dependency_types),
+    allowedLaunchers: supportedNames(data.allowed_launchers, "allowed_launchers", supportedLaunchers, ["single"]),
+    allowedMpiModes: mpiModes(data.allowed_mpi_modes),
+    allowedDistributions: supportedNames(
+      data.allowed_distributions, "allowed_distributions", supportedDistributions,
+    ),
     maxLogLines: positive(data.max_log_lines, "max_log_lines", 1000),
     maxLogBytes: positive(data.max_log_bytes, "max_log_bytes", 1048576),
     maxArtifactBytes: positive(data.max_artifact_bytes, "max_artifact_bytes", 104857600),

@@ -43,10 +43,16 @@ allowed_virtualenvs:
       expect(policy.maxHistoryDays).toBe(30);
       expect(policy.maxHistoryJobs).toBe(200);
       expect(policy.maxListJobs).toBe(200);
+      expect(policy.maxInputFiles).toBe(0);
+      expect(policy.maxInputFileBytes).toBe(0);
+      expect(policy.maxInputTotalBytes).toBe(0);
       expect(policy.maxArrayTasks).toBe(0);
       expect(policy.maxArrayConcurrency).toBe(0);
       expect(policy.maxDependencyJobs).toBe(0);
       expect(policy.allowedDependencyTypes).toEqual([]);
+      expect(policy.allowedLaunchers).toEqual(["single"]);
+      expect(policy.allowedMpiModes).toEqual([]);
+      expect(policy.allowedDistributions).toEqual([]);
       expect(policy.allowedAccounts).toEqual({});
       expect(policy.allowedQos).toEqual({});
       expect(policy.allowedConstraints).toEqual({});
@@ -106,10 +112,16 @@ max_wait_seconds: 7200
 max_history_days: 14
 max_history_jobs: 75
 max_list_jobs: 80
+max_input_files: 64
+max_input_file_bytes: 104857600
+max_input_total_bytes: 536870912
 max_array_tasks: 500
 max_array_concurrency: 20
 max_dependency_jobs: 4
 allowed_dependency_types: [afterok, afterany]
+allowed_launchers: [single, srun]
+allowed_mpi_modes: [pmix, pmix_v3]
+allowed_distributions: [block, cyclic]
 max_artifact_files: 250
 allowed_signals: [term, USR1]
 allowed_gres:
@@ -126,10 +138,16 @@ allowed_gres:
       expect(policy.maxHistoryDays).toBe(14);
       expect(policy.maxHistoryJobs).toBe(75);
       expect(policy.maxListJobs).toBe(80);
+      expect(policy.maxInputFiles).toBe(64);
+      expect(policy.maxInputFileBytes).toBe(104857600);
+      expect(policy.maxInputTotalBytes).toBe(536870912);
       expect(policy.maxArrayTasks).toBe(500);
       expect(policy.maxArrayConcurrency).toBe(20);
       expect(policy.maxDependencyJobs).toBe(4);
       expect(policy.allowedDependencyTypes).toEqual(["afterok", "afterany"]);
+      expect(policy.allowedLaunchers).toEqual(["single", "srun"]);
+      expect(policy.allowedMpiModes).toEqual(["pmix", "pmix_v3"]);
+      expect(policy.allowedDistributions).toEqual(["block", "cyclic"]);
       expect(policy.maxArtifactFiles).toBe(250);
       expect(policy.allowedSignals).toEqual(["TERM", "USR1"]);
       expect(policy.allowedGres.a100x2).toBe("gpu:a100:2");
@@ -144,6 +162,16 @@ allowed_gres:
       finally { fixture.cleanup(); }
     },
   );
+
+  it.each([
+    ["allowed_launchers", "[single, shell]"],
+    ["allowed_mpi_modes", "[pmix, 'pmix;id']"],
+    ["allowed_distributions", "[block, arbitrary]"],
+  ])("rejects unsafe or unsupported launcher policy in %s", (key, value) => {
+    const fixture = policyFile(`${base}\n${key}: ${value}\n`);
+    try { expect(() => loadPolicy(fixture.path)).toThrow(); }
+    finally { fixture.cleanup(); }
+  });
 
   it.each([
     "relative/image.sif",

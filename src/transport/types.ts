@@ -25,6 +25,8 @@ export interface SafeSubmissionUpload {
   content: Buffer;
   remotePath: string;
   maxBytes: number;
+  mode?: 0o600 | 0o700;
+  label?: "payload" | "runner" | "input" | "manifest";
 }
 
 export interface RemoteExecutor {

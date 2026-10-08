@@ -32,6 +32,7 @@ describe("configuration path safety", () => {
     const config = loadConfig(environment({ SLURM_REMOTE_WORKSPACE: "/home/alice/work-space/" }));
     expect(config.ssh.workspace).toBe("/home/alice/work-space");
     expect(config.remoteApptainerPath).toBe("/usr/bin/apptainer");
+    expect(config.remoteSrunPath).toBe("/usr/bin/srun");
   });
 
   it.each(["/home/alice/work,ALL", "/home/alice/work space", "/home/alice/../root"])(
@@ -45,6 +46,13 @@ describe("configuration path safety", () => {
   it("rejects an unsafe Apptainer executable path", () => {
     expect(() => loadConfig(environment({ SLURM_REMOTE_APPTAINER_PATH: "/usr/bin/app,tainer" })))
       .toThrowError(/SLURM_REMOTE_APPTAINER_PATH must be a safe absolute POSIX path/);
+  });
+
+  it("accepts a controlled srun path and rejects unsafe values", () => {
+    expect(loadConfig(environment({ SLURM_REMOTE_SRUN_PATH: "/opt/slurm/bin/srun" })).remoteSrunPath)
+      .toBe("/opt/slurm/bin/srun");
+    expect(() => loadConfig(environment({ SLURM_REMOTE_SRUN_PATH: "/usr/bin/srun;id" })))
+      .toThrowError(/SLURM_REMOTE_SRUN_PATH must be a safe absolute POSIX path/);
   });
 });
 

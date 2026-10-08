@@ -28,6 +28,7 @@ export interface AppConfig {
   localArtifactsPath?: string;
   localJobWorkspace?: string;
   remoteApptainerPath: string;
+  remoteSrunPath: string;
 }
 
 function required(env: NodeJS.ProcessEnv, name: string): string {
@@ -181,6 +182,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     remoteApptainerPath: safeRemotePath(
       env.SLURM_REMOTE_APPTAINER_PATH?.trim() || "/usr/bin/apptainer",
       "SLURM_REMOTE_APPTAINER_PATH",
+    ),
+    remoteSrunPath: safeRemotePath(
+      env.SLURM_REMOTE_SRUN_PATH?.trim() || "/usr/bin/srun",
+      "SLURM_REMOTE_SRUN_PATH",
     ),
   };
 }
