@@ -42,6 +42,7 @@ allowed_virtualenvs:
       expect(policy.maxWaitSeconds).toBe(86400);
       expect(policy.maxHistoryDays).toBe(30);
       expect(policy.maxHistoryJobs).toBe(200);
+      expect(policy.maxListJobs).toBe(200);
       expect(policy.maxArrayTasks).toBe(0);
       expect(policy.maxArrayConcurrency).toBe(0);
       expect(policy.maxDependencyJobs).toBe(0);
@@ -104,6 +105,7 @@ allow_exclusive: true
 max_wait_seconds: 7200
 max_history_days: 14
 max_history_jobs: 75
+max_list_jobs: 80
 max_array_tasks: 500
 max_array_concurrency: 20
 max_dependency_jobs: 4
@@ -123,6 +125,7 @@ allowed_gres:
       expect(policy.maxWaitSeconds).toBe(7200);
       expect(policy.maxHistoryDays).toBe(14);
       expect(policy.maxHistoryJobs).toBe(75);
+      expect(policy.maxListJobs).toBe(80);
       expect(policy.maxArrayTasks).toBe(500);
       expect(policy.maxArrayConcurrency).toBe(20);
       expect(policy.maxDependencyJobs).toBe(4);

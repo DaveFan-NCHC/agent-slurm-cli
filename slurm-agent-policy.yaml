@@ -13,6 +13,7 @@ max_time_minutes: 240
 max_wait_seconds: 86400
 max_history_days: 30
 max_history_jobs: 200
+max_list_jobs: 200
 # Omit these new keys to keep arrays and dependencies disabled on upgrade.
 max_array_tasks: 1000
 max_array_concurrency: 32

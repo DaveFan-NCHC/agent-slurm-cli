@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   parseAccountingJob, parseArtifactList, parseClusterInfo, parseFairShare, parseHistory,
-  parseJobUsage, parseLiveUsage, parseNodeInfo, parseQueueList, parseSubmittedJobId,
+  parseJobControlDetails, parseJobUsage, parseLiveUsage, parseNodeInfo, parsePriorityFactors,
+  parseQueueList, parseSubmittedJobId,
 } from "../../src/slurm/parser.js";
 
 describe("Slurm parsers", () => {
@@ -56,12 +57,46 @@ describe("Slurm parsers", () => {
       {
         node_name: "gpu01", partition: "gpu", availability: "up", state: "mix",
         cpus: { allocated: 8, idle: 104, other: 0, total: 112 }, gres: ["gpu:h200:8"],
+        memory: { total_mib: 0 }, gres_configured: ["gpu:h200:8"], gres_used: [],
+        features: [], active_features: [],
       },
       {
         node_name: "gpu02", partition: "gpu", availability: "up", state: "idle",
         cpus: { allocated: 0, idle: 112, other: 0, total: 112 }, gres: [],
+        memory: { total_mib: 0 }, gres_configured: [], gres_used: [], features: [], active_features: [],
       },
     ]);
+  });
+  it("parses extended node memory, GRES usage, features, and drain details", () => {
+    const row = [
+      "gpu01", "gpu*", "up", "mixed", "32/32/0/64", "515000", "257500", "241000",
+      "gpu:a100:4", "gpu:a100:2(IDX:0-1)", "zen4,a100", "zen4,a100", "ECC errors",
+      "2026-10-08T09:00:00", "102400",
+    ].join("|");
+    expect(parseNodeInfo(`${row}\n`)).toEqual([{
+      node_name: "gpu01", partition: "gpu", availability: "up", state: "mixed",
+      cpus: { allocated: 32, idle: 32, other: 0, total: 64 },
+      gres: ["gpu:a100:4"],
+      memory: { total_mib: 515000, allocated_mib: 257500, free_mib: 241000, free_is_informational: true },
+      gres_configured: ["gpu:a100:4"], gres_used: ["gpu:a100:2(IDX:0-1)"],
+      features: ["zen4", "a100"], active_features: ["zen4", "a100"],
+      reason: "ECC errors", reason_time: "2026-10-08T09:00:00", temporary_disk_mib: 102400,
+    }]);
+  });
+  it("parses allowlisted scontrol job details", () => {
+    const output = "JobId=44 JobName=train UserId=alice(1000) JobState=PENDING Reason=Priority Dependency=afterok:43 EligibleTime=2026-10-08T09:00:00 NumNodes=1 NumCPUs=8 ReqTRES=cpu=8,mem=32G,node=1,gres/gpu=1";
+    expect(parseJobControlDetails(output, "44")).toEqual({
+      eligible_time: "2026-10-08T09:00:00", dependency: "afterok:43",
+      requested_resources: { nodes: 1, cpus: 8, memory: "32G", tres: "cpu=8,mem=32G,node=1,gres/gpu=1" },
+    });
+  });
+  it("parses sprio factors and rejects malformed matching rows", () => {
+    expect(parsePriorityFactors("44|48321|1200|0|35100|21|12000|0|0|-5|5\n", "44")).toEqual({
+      available: true, total: 48321, age: 1200, association: 0, fairshare: 35100,
+      job_size: 21, partition: 12000, qos: 0, tres: "0", nice: -5, site: 5,
+    });
+    expect(parsePriorityFactors("45|1|2\n", "44")).toBeUndefined();
+    expect(() => parsePriorityFactors("44|1|2\n", "44")).toThrow();
   });
   it("parses accounting history rows", () => {
     const output = [

@@ -82,6 +82,102 @@ export interface NodeInfo {
     total: number;
   };
   gres: string[];
+  memory: {
+    total_mib: number;
+    allocated_mib?: number;
+    free_mib?: number;
+    free_is_informational?: true;
+  };
+  gres_configured: string[];
+  gres_used: string[];
+  features: string[];
+  active_features: string[];
+  reason?: string;
+  reason_time?: string;
+  temporary_disk_mib?: number;
+}
+
+export type JobSort = "submit_time_desc" | "start_time_desc" | "priority_desc" | "job_id_asc";
+export type HistorySort = "start_time_desc" | "end_time_desc" | "job_id_asc";
+export type ArrayView = "expanded" | "summary";
+
+export interface ListQuery {
+  states?: string[];
+  partition?: string;
+  name?: string;
+  account?: string;
+  limit: number;
+  sort: JobSort;
+  array_view: ArrayView;
+}
+
+export interface HistoryQuery {
+  days?: number;
+  since?: string;
+  until?: string;
+  states?: string[];
+  partition?: string;
+  name?: string;
+  account?: string;
+  limit: number;
+  sort: HistorySort;
+  array_view: ArrayView;
+}
+
+export interface NodeQuery {
+  partition?: string;
+  state?: string;
+  feature?: string;
+}
+
+export interface RequestedResources {
+  nodes?: number;
+  cpus?: number;
+  memory?: string;
+  tres?: string;
+}
+
+export interface PriorityFactors {
+  available: boolean;
+  total?: number;
+  age?: number;
+  association?: number;
+  fairshare?: number;
+  job_size?: number;
+  partition?: number;
+  qos?: number;
+  tres?: string;
+  nice?: number;
+  site?: number;
+}
+
+export type DiagnosisCode =
+  | "DEPENDENCY_BLOCKED"
+  | "BEGIN_TIME_NOT_REACHED"
+  | "WAITING_FOR_PRIORITY"
+  | "WAITING_FOR_RESOURCES"
+  | "UNSATISFIABLE_CONSTRAINT"
+  | "ACCOUNT_OR_QOS_LIMIT"
+  | "JOB_RUNNING"
+  | "JOB_COMPLETED"
+  | "JOB_FAILED"
+  | "UNKNOWN_PENDING_REASON";
+
+export interface DiagnosisFinding {
+  code: DiagnosisCode;
+  message: string;
+}
+
+export interface JobDiagnosis {
+  job_id: string;
+  job: Omit<OwnedJob, "user"> & {
+    eligible_time?: string;
+    expected_start_time?: string;
+    dependency?: string;
+  };
+  requested_resources: RequestedResources;
+  priority: PriorityFactors;
+  findings: DiagnosisFinding[];
 }
 
 export interface WaitResult {

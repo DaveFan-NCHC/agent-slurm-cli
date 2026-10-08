@@ -12,6 +12,7 @@ slurm-agent list
 slurm-agent history
 slurm-agent fairshare
 slurm-agent status JOB_ID
+slurm-agent diagnose JOB_ID
 slurm-agent usage JOB_ID
 slurm-agent cancel JOB_ID
 slurm-agent hold JOB_ID
@@ -141,6 +142,7 @@ allowed_qos:
   standard: normal
 allowed_constraints:
   modern-cpu: '[zen3|zen4]'
+  zen4-only: zen4
 allowed_nodelists:
   gpu-a: 'gpu[01-02]'
 allowed_exclude_nodelists:
@@ -150,6 +152,7 @@ allowed_reservations:
 max_wait_seconds: 86400
 max_history_days: 30
 max_history_jobs: 200
+max_list_jobs: 200
 max_array_tasks: 1000
 max_array_concurrency: 32
 max_dependency_jobs: 16
@@ -278,11 +281,16 @@ Other operations:
 
 ```bash
 slurm-agent cluster-info
-slurm-agent nodes
-slurm-agent list
-slurm-agent history --days 7 --state COMPLETED --limit 50
+slurm-agent nodes --partition slurm-test --state idle
+slurm-agent nodes --feature zen4-only
+slurm-agent list --state PENDING,RUNNING --partition slurm-test --limit 50
+slurm-agent list --name train --account research --sort priority_desc --array-view expanded
+slurm-agent history --days 7 --state COMPLETED,FAILED --limit 50
+slurm-agent history --since 2026-10-01T00:00:00 --until 2026-10-08T00:00:00 \
+  --partition slurm-test --name train --account research --sort end_time_desc
 slurm-agent fairshare
 slurm-agent status 12345
+slurm-agent diagnose 12345
 slurm-agent usage 12345
 slurm-agent wait 12345 --timeout 3600 --poll-interval 10
 slurm-agent logs 12345 --stream stdout --tail 200
@@ -297,7 +305,13 @@ slurm-agent signal 12345 --signal USR1 --scope batch
 slurm-agent artifacts 12345
 ```
 
-`cluster-info` returns partition-level availability, time limit, node state, CPU counts, and configured GRES only for `allowed_partitions`. `nodes` returns the node name, partition, availability, state, CPU counts, and GRES for each node in those same policy-allowed partitions; it does not accept a caller-supplied partition. Active `list` and `status` results include available scheduling diagnostics such as pending reason, priority, actual or expected start time, submit time, time limit/remaining, allocated nodes, CPU/node counts, account, QOS, and reservation. For a pending job, `start_time` is Slurm's estimate and may be unavailable when the cluster does not use backfill scheduling. Completed `status` records return the corresponding retained accounting fields.
+`cluster-info` returns partition-level availability, time limit, node state, CPU counts, and configured GRES only for `allowed_partitions`. `nodes` returns node state, CPU state, total/allocated/free memory, configured/used GRES, available/active features, temporary disk, and unavailable reason fields. `free_mib` is an informational OS report and is not scheduler-available memory. Node queries may be narrowed by an allowed partition, a supported node state, or a policy constraint alias that resolves to one concrete feature.
+
+`list` remains fixed to the configured SSH user and supports bounded state, allowed partition, safe exact job name, account alias, sort, limit, and expanded/summary array views. `max_list_jobs` caps the result count. `history` adds the same partition/name/account filtering, comma-separated states, sorting, array views, and either bounded `--days` or an explicit `--since`/`--until` pair. Explicit timestamps use `YYYY-MM-DDTHH:MM:SS` in the Slurm cluster's local time. `--days` and explicit timestamps are mutually exclusive.
+
+Active `list` and `status` results include available scheduling diagnostics such as pending reason, priority, actual or expected start time, submit time, time limit/remaining, allocated nodes, CPU/node counts, account, QOS, and reservation. For a pending job, `start_time` is Slurm's estimate and may be unavailable when the cluster does not use backfill scheduling. Completed `status` records return the corresponding retained accounting fields.
+
+`diagnose JOB_ID` verifies ownership, combines bounded `squeue`/`sacct`, `scontrol show job`, and (for pending jobs) `sprio` queries, and returns requested resources, eligible/dependency fields, stable finding codes, and multifactor priority components. If `sprio` is unavailable or the cluster does not use multifactor priority, diagnosis still succeeds with `priority.available: false`. Findings classify only data reported by Slurm and do not claim an exact start time.
 
 `hold`, `release`, and `requeue` verify ownership before invoking the matching `scontrol` operation. A parent array ID applies to the whole owned array; an explicit task ID applies only to that task. `release` cannot remove an administrator hold. `requeue` restarts the batch script from the beginning with the same job ID.
 
@@ -309,7 +323,7 @@ slurm-agent artifacts 12345
 
 `wait` polls the owned job until it reaches a terminal state. If its bounded timeout expires, it returns `ok: true`, `terminal: false`, `timed_out: true`, and the last observed job state. `terminal: true` means the job has stopped, not necessarily that it succeeded; callers must inspect `job.state` and `job.exit_code`.
 
-`history` uses one bounded accounting query and returns allocation records only for the configured SSH user. `--days` and `--limit` are capped by `max_history_days` and `max_history_jobs`; `--state` accepts a fixed set of Slurm job states.
+`history` uses one bounded accounting query and returns allocation records only for the configured SSH user. Time windows and result counts are capped by `max_history_days` and `max_history_jobs`; `--state` accepts one to eight supported Slurm job states.
 
 `usage` verifies ownership and returns allocation/step accounting including CPU time, peak RSS/VM size, disk I/O, requested and allocated TRES, and exit status. CPU efficiency is `TotalCPU / (ElapsedRaw × AllocCPUS)`. Memory efficiency compares the largest reported step `MaxRSS` with the requested memory after applying Slurm's per-CPU (`c`) or per-node (`n`) scope; it is an estimate for multi-task jobs. An efficiency field is omitted when its inputs are unavailable. For non-pending active jobs, `live_steps` comes from `sstat`; `live_available: false` means live metrics were unavailable, while accounting data remains valid.
 
@@ -369,11 +383,11 @@ If a remote Slurm command fails, the error object also includes a sanitized `slu
 - Agent scripts come only from `SLURM_LOCAL_JOB_WORKSPACE`; symlinks, traversal, oversized files, invalid UTF-8, missing shebangs, and embedded `#SBATCH` directives are rejected. The exact bytes are hashed before upload.
 - Upload destinations are random, CLI-generated directories below `.slurm-agent/submissions`; callers cannot select a remote destination. Payload and trusted runner uploads use temporary files followed by atomic rename.
 - The batch environment exports only controlled `SLURM_AGENT_*` values, not the complete SSH process environment.
-- `cancel`, `hold`, `release`, `requeue`, `update`, `signal`, `status`, `usage`, `wait`, `logs`, `artifacts`, and `artifact` confirm that Slurm reports the configured user as owner. Dependency references receive the same ownership check before submission or update. `history` and `fairshare` fix their queries to that user and reject unexpected cross-user rows.
+- `cancel`, `hold`, `release`, `requeue`, `update`, `signal`, `status`, `diagnose`, `usage`, `wait`, `logs`, `artifacts`, and `artifact` confirm that Slurm reports the configured user as owner. Dependency references receive the same ownership check before submission or update. `list`, `history`, and `fairshare` fix their queries to that user and reject unexpected cross-user rows.
 - Script and log paths are checked with remote `realpath`, preventing traversal and symlink escape.
 - Artifact transfer is an internal, single-file SFTP stream after remote containment checks; it is not an SFTP browser. The destination is derived from trusted configuration and the job ID, and is created without overwrite.
 - Audit records never contain private keys, credentials, command stderr, or environment values.
-- The remote host needs GNU-compatible `realpath`, `test`, `mkdir`, `tail`, and `find`, plus `sbatch`, `squeue`, `sacct`, `scancel`, `scontrol`, `sinfo`, `sshare`, and `sstat` in its non-interactive PATH.
+- The remote host needs GNU-compatible `realpath`, `test`, `mkdir`, `tail`, and `find`, plus `sbatch`, `squeue`, `sacct`, `scancel`, `scontrol`, `sinfo`, `sprio`, `sshare`, and `sstat` in its non-interactive PATH. `sprio` may return no factors on clusters without multifactor priority; this is a supported diagnose degradation.
 - Cluster-wide enforcement still belongs in Slurm configuration such as account/QOS limits and `job_submit` policy; the CLI policy is an additional capability boundary, not a replacement for scheduler controls.
 - Completed-job lookup depends on Slurm accounting (`sacct`) retention and permissions. If no allocation record is visible, the CLI reports `JOB_NOT_FOUND`.
 - Live resource metrics depend on Slurm's `jobacct_gather` support. If `sstat` is unavailable for a running job, `usage` returns accounting data with `live_available: false`.

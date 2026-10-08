@@ -7,17 +7,15 @@ import type { NormalizedSubmit, NormalizedUpdate, SignalScope } from "../policy/
 import type { Policy } from "../policy/types.js";
 import type { RemoteExecutor, RemoteResult, SafeCommand } from "../transport/types.js";
 import {
-  parseAccountingJobs, parseArtifactList, parseClusterInfo, parseFairShare, parseHistory, parseJobUsage, parseLiveUsage,
-  parseNodeInfo,
-  parseQueueJobs, parseQueueList, parseSubmittedJobId,
+  parseAccountingJobs, parseArtifactList, parseClusterInfo, parseFairShare, parseHistory, parseJobControlDetails,
+  parseJobUsage, parseLiveUsage, parseNodeInfo, parsePriorityFactors, parseQueueJobs, parseSubmittedJobId,
 } from "./parser.js";
 import type {
-  ArtifactEntry, ArtifactResult, FairShareEntry, HistoryJob, JobSummary, JobUsage, LogResult, NodeInfo, OwnedJob,
-  PartitionInfo, WaitResult,
+  ArtifactEntry, ArtifactResult, DiagnosisFinding, FairShareEntry, HistoryJob, HistoryQuery, JobDiagnosis, JobSummary,
+  JobUsage, ListQuery, LogResult, NodeInfo, NodeQuery, OwnedJob, PartitionInfo, PriorityFactors, WaitResult,
 } from "./types.js";
 import { TRUSTED_RUNNER } from "./runner.js";
 
-const QUEUE_LIST_FORMAT = "%i|%j|%P|%T|%M|%r|%Q|%S|%V|%l|%L|%N|%D|%C|%a|%q|%v";
 const QUEUE_JOB_FORMAT = "%i|%u|%j|%P|%T|%M|%r|%Q|%S|%V|%l|%L|%N|%D|%C|%a|%q|%v";
 const ACCOUNTING_JOB_FORMAT = "JobIDRaw,User,JobName,Partition,State,Elapsed,ExitCode,Reason,Priority,Start,Submit,Timelimit,NodeList,AllocNodes,AllocCPUS,Account,QOS,Reservation";
 const MAX_EXPOSED_SLURM_MESSAGE_BYTES = 4096;
@@ -107,12 +105,31 @@ export class SlurmClient {
     return resolved;
   }
 
-  async list(): Promise<JobSummary[]> {
+  async list(query: ListQuery = {
+    limit: this.policy.maxListJobs, sort: "submit_time_desc", array_view: "expanded",
+  }): Promise<JobSummary[]> {
+    const args = ["--noheader"];
+    if (query.array_view === "expanded") args.push("--array");
+    args.push("--user", this.user);
+    if (query.states?.length) args.push(`--states=${query.states.join(",")}`);
+    if (query.partition) args.push(`--partition=${query.partition}`);
+    if (query.name) args.push(`--name=${query.name}`);
+    if (query.account) args.push(`--account=${query.account}`);
+    args.push(`--format=${QUEUE_JOB_FORMAT}`);
     const result = await this.run({
-      executable: "squeue", args: ["--noheader", "--array", "--user", this.user, `--format=${QUEUE_LIST_FORMAT}`],
+      executable: "squeue", args, maxOutputBytes: 1048576,
     });
     if (result.exitCode !== 0) failure(result, "SLURM_QUERY_FAILED", "Unable to list Slurm jobs.");
-    return parseQueueList(result.stdout);
+    if (result.stdoutTruncated) {
+      throw new AgentError("SLURM_QUERY_FAILED", "Slurm queue output exceeded the safe limit.", ExitCode.SlurmFailure);
+    }
+    const jobs = parseQueueJobs(result.stdout).map((owned) => {
+      this.assertOwner(owned);
+      const { user: _user, ...job } = owned;
+      return job;
+    });
+    sortJobs(jobs, query.sort);
+    return jobs.slice(0, query.limit);
   }
 
   async clusterInfo(): Promise<PartitionInfo[]> {
@@ -132,14 +149,15 @@ export class SlurmClient {
     return partitions;
   }
 
-  async nodes(): Promise<NodeInfo[]> {
+  async nodes(query: NodeQuery = {}): Promise<NodeInfo[]> {
+    const partitions = query.partition ? [query.partition] : this.policy.allowedPartitions;
+    const args = [
+      "--noheader", "--Node", `--partition=${partitions.join(",")}`,
+      "--Format=NodeList:.256|,Partition:.128|,Available:.16|,StateLong:.64|,CPUsState:.64|,Memory:.32|,AllocMem:.32|,FreeMem:.32|,Gres:.1024|,GresUsed:.1024|,Features:.1024|,features_act:.1024|,Reason:.256|,TimeStamp:.64|,Disk:.32",
+    ];
+    if (query.state) args.push(`--states=${query.state}`);
     const result = await this.run({
-      executable: "sinfo",
-      args: [
-        "--noheader", "--Node",
-        `--partition=${this.policy.allowedPartitions.join(",")}`,
-        "--format=%N|%P|%a|%t|%C|%G",
-      ],
+      executable: "sinfo", args,
       maxOutputBytes: 1048576,
     });
     if (result.exitCode !== 0) failure(result, "SLURM_QUERY_FAILED", "Unable to list Slurm nodes.");
@@ -150,16 +168,34 @@ export class SlurmClient {
     if (nodes.some((node) => !this.policy.allowedPartitions.includes(node.partition))) {
       throw new AgentError("SLURM_QUERY_FAILED", "Slurm returned a node outside the configured partition policy.", ExitCode.SlurmFailure);
     }
-    return nodes;
+    return query.feature
+      ? nodes.filter((node) => node.features.includes(query.feature!) || node.active_features.includes(query.feature!))
+      : nodes;
   }
 
-  async history(days: number, state: string | undefined, limit: number): Promise<HistoryJob[]> {
+  async history(query: HistoryQuery): Promise<HistoryJob[]>;
+  async history(days: number, state: string | undefined, limit: number): Promise<HistoryJob[]>;
+  async history(queryOrDays: HistoryQuery | number, state?: string, legacyLimit?: number): Promise<HistoryJob[]> {
+    const query: HistoryQuery = typeof queryOrDays === "number"
+      ? {
+          days: queryOrDays, states: state ? [state] : undefined, limit: legacyLimit ?? this.policy.maxHistoryJobs,
+          sort: "start_time_desc", array_view: "summary",
+        }
+      : queryOrDays;
     const args = [
       "--noheader", "--parsable2", "--allocations", "--local", `--user=${this.user}`,
-      `--starttime=now-${days}days`,
       "--format=JobIDRaw,User,JobName,Partition,State,Elapsed,Start,End,ExitCode,AllocCPUS,AllocNodes,ReqMem,ReqTRES",
     ];
-    if (state) args.push(`--state=${state}`);
+    if (query.array_view === "expanded") args.push("--array");
+    if (query.since && query.until) {
+      args.push(`--starttime=${query.since}`, `--endtime=${query.until}`);
+    } else {
+      args.push(`--starttime=now-${query.days ?? 7}days`);
+    }
+    if (query.states?.length) args.push(`--state=${query.states.join(",")}`);
+    if (query.partition) args.push(`--partition=${query.partition}`);
+    if (query.name) args.push(`--name=${query.name}`);
+    if (query.account) args.push(`--accounts=${query.account}`);
     const result = await this.run({ executable: "sacct", args, maxOutputBytes: 1048576 });
     if (result.exitCode !== 0) failure(result, "SLURM_QUERY_FAILED", "Unable to query Slurm job history.");
     if (result.stdoutTruncated) {
@@ -169,14 +205,72 @@ export class SlurmClient {
     if (jobs.some((job) => job.user !== this.user)) {
       throw new AgentError("SLURM_QUERY_FAILED", "Slurm returned history for another user.", ExitCode.SlurmFailure);
     }
-    return jobs.reverse().slice(0, limit).map(({ user: _user, ...job }) => job);
+    const safeJobs = jobs.map(({ user: _user, ...job }) => job);
+    sortHistory(safeJobs, query.sort);
+    return safeJobs.slice(0, query.limit);
+  }
+
+  async diagnose(jobId: string): Promise<JobDiagnosis> {
+    const owned = await this.getOwnedJob(jobId);
+    const { user: _user, ...job } = owned;
+    const pending = job.state.toUpperCase().split(/[ +]/, 1)[0] === "PENDING";
+    let eligibleTime: string | undefined;
+    let dependency: string | undefined;
+    let requestedResources = {
+      ...(job.nodes === undefined ? {} : { nodes: job.nodes }),
+      ...(job.cpus === undefined ? {} : { cpus: job.cpus }),
+    };
+    const control = await this.run({
+      executable: "scontrol", args: ["--oneliner", "show", "job", jobId], maxOutputBytes: 262144,
+    });
+    if (control.exitCode === 0 && !control.stdoutTruncated) {
+      const details = parseJobControlDetails(control.stdout, jobId);
+      eligibleTime = details.eligible_time;
+      dependency = details.dependency;
+      requestedResources = { ...requestedResources, ...details.requested_resources };
+    } else if (!isTerminalState(job.state)) {
+      if (control.stdoutTruncated) {
+        throw new AgentError("SLURM_QUERY_FAILED", "Slurm job details exceeded the safe limit.", ExitCode.SlurmFailure);
+      }
+      failure(control, "SLURM_QUERY_FAILED", `Unable to query scheduling details for job ${jobId}.`);
+    }
+    let priority: PriorityFactors = { available: false };
+    if (pending) {
+      const priorityResult = await this.run({
+        executable: "sprio",
+        args: [
+          "--noheader", `--jobs=${jobId}`,
+          "--format=%i|%Y|%A|%B|%F|%J|%P|%Q|%T|%N|%S",
+        ],
+        maxOutputBytes: 262144,
+      });
+      if (priorityResult.exitCode === 0 && !priorityResult.stdoutTruncated) {
+        priority = parsePriorityFactors(priorityResult.stdout, jobId) ?? priority;
+      }
+    }
+    return {
+      job_id: jobId,
+      job: {
+        ...job,
+        ...(eligibleTime === undefined ? {} : { eligible_time: eligibleTime }),
+        ...(!pending || job.start_time === undefined ? {} : { expected_start_time: job.start_time }),
+        ...(dependency === undefined ? {} : { dependency }),
+      },
+      requested_resources: requestedResources,
+      priority,
+      findings: diagnoseFindings(job.state, job.reason),
+    };
   }
 
   async getOwnedJob(jobId: string): Promise<OwnedJob> {
     const active = await this.run({
       executable: "squeue", args: ["--noheader", "--array", "--jobs", jobId, `--format=${QUEUE_JOB_FORMAT}`],
+      maxOutputBytes: 1048576,
     });
     if (active.exitCode === 0) {
+      if (active.stdoutTruncated) {
+        throw new AgentError("SLURM_QUERY_FAILED", "Slurm job output exceeded the safe limit.", ExitCode.SlurmFailure);
+      }
       const activeJobs = parseQueueJobs(active.stdout);
       const job = activeJobs.find((candidate) => candidate.job_id === jobId);
       if (job) return this.assertOwner(job);
@@ -191,8 +285,12 @@ export class SlurmClient {
     const accounting = await this.run({
       executable: "sacct",
       args: ["--noheader", "--parsable2", "--allocations", "--jobs", jobId, `--format=${ACCOUNTING_JOB_FORMAT}`],
+      maxOutputBytes: 1048576,
     });
     if (accounting.exitCode !== 0) failure(accounting, "SLURM_QUERY_FAILED", "Unable to query Slurm accounting.");
+    if (accounting.stdoutTruncated) {
+      throw new AgentError("SLURM_QUERY_FAILED", "Slurm accounting output exceeded the safe limit.", ExitCode.SlurmFailure);
+    }
     const accountingJobs = parseAccountingJobs(accounting.stdout);
     const job = accountingJobs.find((candidate) => candidate.job_id === jobId);
     if (!job) {
@@ -518,6 +616,74 @@ export class SlurmClient {
     }
     return parseArtifactList(result.stdout, this.policy.maxArtifactFiles);
   }
+}
+
+function compareOptionalTextDescending(left: string | undefined, right: string | undefined): number {
+  if (left === right) return 0;
+  if (left === undefined) return 1;
+  if (right === undefined) return -1;
+  return right.localeCompare(left);
+}
+
+function compareJobIds(left: string, right: string): number {
+  return left.localeCompare(right, undefined, { numeric: true });
+}
+
+function sortJobs(jobs: JobSummary[], sort: ListQuery["sort"]): void {
+  jobs.sort((left, right) => {
+    switch (sort) {
+      case "submit_time_desc": return compareOptionalTextDescending(left.submit_time, right.submit_time);
+      case "start_time_desc": return compareOptionalTextDescending(left.start_time, right.start_time);
+      case "priority_desc": return (right.priority ?? -1) - (left.priority ?? -1);
+      case "job_id_asc": return compareJobIds(left.job_id, right.job_id);
+    }
+  });
+}
+
+function sortHistory(jobs: HistoryJob[], sort: HistoryQuery["sort"]): void {
+  jobs.sort((left, right) => {
+    switch (sort) {
+      case "start_time_desc": return right.start.localeCompare(left.start);
+      case "end_time_desc": return right.end.localeCompare(left.end);
+      case "job_id_asc": return compareJobIds(left.job_id, right.job_id);
+    }
+  });
+}
+
+function diagnoseFindings(stateValue: string, reasonValue?: string): DiagnosisFinding[] {
+  const state = stateValue.toUpperCase().split(/[ +]/, 1)[0]!;
+  const reason = reasonValue ?? "";
+  if (state === "RUNNING" || state === "COMPLETING") {
+    return [{ code: "JOB_RUNNING", message: "The job is running or completing." }];
+  }
+  if (state === "COMPLETED") {
+    return [{ code: "JOB_COMPLETED", message: "The job completed successfully." }];
+  }
+  if (isTerminalState(state)) {
+    return [{ code: "JOB_FAILED", message: `The job stopped in state ${state}.` }];
+  }
+  if (state !== "PENDING") {
+    return [{ code: "UNKNOWN_PENDING_REASON", message: `No diagnosis is defined for state ${state}.` }];
+  }
+  if (/Dependency/i.test(reason)) {
+    return [{ code: "DEPENDENCY_BLOCKED", message: "The job is waiting for a dependency condition." }];
+  }
+  if (/BeginTime/i.test(reason)) {
+    return [{ code: "BEGIN_TIME_NOT_REACHED", message: "The job's earliest start time has not been reached." }];
+  }
+  if (/BadConstraints|Constraints/i.test(reason)) {
+    return [{ code: "UNSATISFIABLE_CONSTRAINT", message: "The requested node constraints are not currently satisfiable." }];
+  }
+  if (/QOS|Assoc|Account|Partition.*Limit|Max.*Per/i.test(reason)) {
+    return [{ code: "ACCOUNT_OR_QOS_LIMIT", message: "An account, association, partition, or QOS limit is blocking the job." }];
+  }
+  if (/Priority/i.test(reason)) {
+    return [{ code: "WAITING_FOR_PRIORITY", message: "The job is eligible and waiting for scheduling priority." }];
+  }
+  if (/Resources|ReqNodeNotAvail|Node|Reservation/i.test(reason)) {
+    return [{ code: "WAITING_FOR_RESOURCES", message: "The job is waiting for requested resources to become available." }];
+  }
+  return [{ code: "UNKNOWN_PENDING_REASON", message: "Slurm reported a pending reason that is not classified." }];
 }
 
 const TERMINAL_STATES = new Set([

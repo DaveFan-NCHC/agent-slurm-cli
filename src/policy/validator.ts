@@ -1,4 +1,5 @@
 import { invalid, policyDenied } from "../errors/errors.js";
+import type { ArrayView, HistorySort, JobSort } from "../slurm/types.js";
 import type { Policy } from "./types.js";
 
 export interface SubmitOptions {
@@ -66,6 +67,13 @@ const historyStates = new Set([
   "OUT_OF_MEMORY", "PENDING", "PREEMPTED", "RUNNING", "REQUEUED", "RESIZING",
   "REVOKED", "SUSPENDED", "TIMEOUT",
 ]);
+const nodeStates = new Set([
+  "ALLOCATED", "BLOCKED", "COMPLETING", "DOWN", "DRAINED", "DRAINING", "FAIL", "FAILING",
+  "FUTURE", "IDLE", "MAINT", "MIXED", "PLANNED", "POWER_DOWN", "POWERING_DOWN",
+  "POWERED_DOWN", "POWERING_UP", "RESERVED", "UNKNOWN",
+]);
+const jobSorts = new Set<JobSort>(["submit_time_desc", "start_time_desc", "priority_desc", "job_id_asc"]);
+const historySorts = new Set<HistorySort>(["start_time_desc", "end_time_desc", "job_id_asc"]);
 
 function resolveRuntimeAlias(alias: string | undefined, allowed: Record<string, string>, label: string): string | undefined {
   if (alias === undefined) return undefined;
@@ -108,6 +116,92 @@ export function validateHistoryState(value: string): string {
   const normalized = value.toUpperCase();
   if (!historyStates.has(normalized)) throw invalid("--state is not a supported Slurm job state.");
   return normalized;
+}
+
+export function validateJobStates(value: string): string[] {
+  const states = value.split(",").map((state) => state.toUpperCase());
+  if (states.length === 0 || states.length > 8 || states.some((state) => !historyStates.has(state))) {
+    throw invalid("--state must contain one to eight supported Slurm job states.");
+  }
+  return [...new Set(states)];
+}
+
+export function validateQueryPartition(value: string | undefined, policy: Policy): string | undefined {
+  if (value === undefined) return undefined;
+  if (!/^[A-Za-z0-9_.-]+$/.test(value)) throw invalid("--partition must be a safe partition name.");
+  if (!policy.allowedPartitions.includes(value)) {
+    throw policyDenied("PARTITION_NOT_ALLOWED", `Partition ${value} is not permitted.`);
+  }
+  return value;
+}
+
+export function validateQueryAccount(value: string | undefined, policy: Policy): string | undefined {
+  return resolvePolicyAlias(value, policy.allowedAccounts, "Account", "ACCOUNT_ALIAS_NOT_ALLOWED");
+}
+
+export function validateQueryName(value: string | undefined): string | undefined {
+  validateJobName(value);
+  return value;
+}
+
+export function validateJobSort(value: string): JobSort {
+  if (!jobSorts.has(value as JobSort)) throw invalid("--sort is not supported for list.");
+  return value as JobSort;
+}
+
+export function validateHistorySort(value: string): HistorySort {
+  if (!historySorts.has(value as HistorySort)) throw invalid("--sort is not supported for history.");
+  return value as HistorySort;
+}
+
+export function validateArrayView(value: string): ArrayView {
+  if (value !== "expanded" && value !== "summary") throw invalid("--array-view must be expanded or summary.");
+  return value;
+}
+
+export function validateHistoryWindow(
+  since: string | undefined,
+  until: string | undefined,
+  policy: Policy,
+): { since?: string; until?: string } {
+  if (since === undefined && until === undefined) return {};
+  if (since === undefined || until === undefined) throw invalid("--since and --until must be specified together.");
+  const pattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/;
+  if (!pattern.test(since) || !pattern.test(until)) {
+    throw invalid("--since and --until must use YYYY-MM-DDTHH:MM:SS in cluster-local time.");
+  }
+  const start = Date.parse(`${since}Z`);
+  const end = Date.parse(`${until}Z`);
+  const validStart = Number.isFinite(start) && new Date(start).toISOString().slice(0, 19) === since;
+  const validEnd = Number.isFinite(end) && new Date(end).toISOString().slice(0, 19) === until;
+  if (!validStart || !validEnd) {
+    throw invalid("--since and --until must be valid cluster-local timestamps.");
+  }
+  if (end < start) {
+    throw invalid("--until must not be earlier than --since.");
+  }
+  if (end - start > policy.maxHistoryDays * 86400000) {
+    throw policyDenied("RESOURCE_LIMIT_EXCEEDED", `History window exceeds policy maximum ${policy.maxHistoryDays} days.`);
+  }
+  return { since, until };
+}
+
+export function validateNodeState(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const normalized = value.toUpperCase();
+  if (!nodeStates.has(normalized)) throw invalid("--state is not a supported Slurm node state.");
+  return normalized;
+}
+
+export function validateNodeFeature(value: string | undefined, policy: Policy): string | undefined {
+  if (value === undefined) return undefined;
+  const resolved = resolvePolicyAlias(
+    value, policy.allowedConstraints, "Feature", "CONSTRAINT_ALIAS_NOT_ALLOWED",
+  );
+  if (resolved !== undefined && !/^[A-Za-z0-9_.-]+$/.test(resolved)) {
+    throw invalid("--feature must resolve to one concrete node feature, not a constraint expression.");
+  }
+  return resolved;
 }
 
 function parseNonNegativeSafeInteger(text: string, label: string): number {

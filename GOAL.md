@@ -4,7 +4,7 @@
 >
 > 文件更新日期：2026-10-08
 >
-> 專案狀態：核心安全批次作業 lifecycle 已完成，準備進入下一階段五項功能。
+> 專案狀態：核心安全批次作業 lifecycle 已完成；Priority 3～5 已實作，Priority 1～2 待辦。
 
 ## 1. 專案目標
 
@@ -71,6 +71,7 @@ slurm-agent cluster-info
 slurm-agent nodes
 slurm-agent list
 slurm-agent history
+slurm-agent diagnose JOB_ID
 slurm-agent fairshare
 slurm-agent status JOB_ID
 slurm-agent usage JOB_ID
@@ -94,6 +95,7 @@ slurm-agent wait JOB_ID
 - job arrays、array concurrency 與受限 dependency types。
 - Apptainer、virtualenv 或 policy 允許的 host runtime。
 - active queue、completed accounting history、單一 job status。
+- bounded queue/history filters、job scheduling diagnosis，以及 node memory/GRES/feature availability。
 - accounting/live resource usage、CPU/memory efficiency 與 fair-share 查詢。
 - cancel、hold、release、requeue、受限 update 與受限 signal。
 - bounded wait、bounded log tail、artifact listing 與單一檔案下載。
@@ -129,12 +131,13 @@ script arguments
 
 ### 3.3 Query 的目前範圍
 
-- `list`：configured user 的 active jobs；目前沒有 caller-provided filters。
+- `list`：configured user 的 active jobs；支援 state、partition、name、account、limit、sort 與 array view。
 - `status`：先查 `squeue`，離開 queue 後查 `sacct`。
-- `history`：支援 bounded days、state、limit。
+- `history`：支援 bounded days 或明確時間窗，以及 state、partition、name、account、limit、sort 與 array view。
+- `diagnose`：彙整 owned job 狀態、requested resources、pending reason 與可取得的 multifactor priority。
 - `usage`：查 accounting steps，active job 可額外查 `sstat`。
 - `fairshare`：查 configured user 的 `sshare` 資料。
-- `cluster-info` / `nodes`：只查 policy 允許的 partitions；目前 node 資料主要是 state、CPU 與 configured GRES。
+- `cluster-info` / `nodes`：只查 policy 允許的 partitions；node 資料包含 state、CPU、memory、configured/used GRES、features 與 unavailable reason。
 
 ### 3.4 Lifecycle update 的目前範圍
 
@@ -198,7 +201,7 @@ audit log
 status, usage, wait, logs, artifacts, artifact
 cancel, hold, release, requeue, update, signal
 dependency references
-未來的 diagnose
+diagnose
 ```
 
 Array parent 與 explicit task ID 必須沿用現有一致語意；需要單一 task 資料時，不得默默選取任一 array task。
@@ -232,21 +235,21 @@ Audit event 應包含 timestamp、action、SSH user、job ID、resource summary�
 7 permission/ownership denied
 ```
 
-## 5. 下一階段：五項優先功能
+## 5. 下一階段：五項優先功能與進度
 
 這五項共同構成下一階段，不代表只挑其中一項。實作順序需考慮依賴，但 milestone 完成標準是五項全部完成。
 
-建議順序：
+目前進度：
 
 ```text
-1. submission-scoped input bundle
-2. safe parallel launcher
-3. diagnose JOB_ID
-4. list/history filters
-5. node memory/GPU availability
+1. submission-scoped input bundle      待辦
+2. safe parallel launcher              待辦
+3. diagnose JOB_ID                     已實作
+4. list/history filters                已實作
+5. node memory/GPU availability        已實作
 ```
 
-Input bundle 先完成，讓 safe launcher 在單節點、多節點與 container runtime 下都有一致的 payload/input layout。三項 read-only query 功能可在前兩項介面穩定後平行開發。
+依目前實作順序，三項 read-only query 功能先完成。下一步是 input bundle，再以其一致的 payload/input layout 完成 safe launcher。五項全部完成前，本 milestone 仍未結案。
 
 ## 6. Priority 1：Submission-scoped input bundle
 
@@ -403,7 +406,7 @@ partial task failure behavior
 
 多 rank artifact 寫入需要明確避免互相覆寫；可提供 rank-aware subdirectory contract，例如以 `SLURM_PROCID` 區分，但不得讓 caller 逃離 job artifact root。
 
-## 8. Priority 3：`diagnose JOB_ID`
+## 8. Priority 3：`diagnose JOB_ID`（已實作）
 
 ### 8.1 目的
 
@@ -464,7 +467,7 @@ slurm-agent diagnose JOB_ID
     "job_size": 21,
     "partition": 12000,
     "qos": 0,
-    "tres": 0,
+    "tres": "0",
     "nice": 0
   },
   "findings": [
@@ -516,7 +519,7 @@ truncated remote output
 stable findings and audit behavior
 ```
 
-## 9. Priority 4：`list` / `history` filters
+## 9. Priority 4：`list` / `history` filters（已實作）
 
 ### 9.1 目的
 
@@ -526,7 +529,7 @@ stable findings and audit behavior
 
 ```bash
 slurm-agent list --state PENDING --partition gpu --name train --limit 50
-slurm-agent history --since 2026-10-01 --until 2026-10-08 \
+slurm-agent history --since 2026-10-01T00:00:00 --until 2026-10-08T00:00:00 \
   --state FAILED --partition gpu --name train --limit 100
 ```
 
@@ -539,7 +542,7 @@ slurm-agent history --since 2026-10-01 --until 2026-10-08 \
 ```text
 state
 partition alias
-job-name exact match or safe bounded prefix
+job-name exact match
 account alias
 limit
 sort enum
@@ -549,10 +552,10 @@ array view: expanded|summary
 `history`：
 
 ```text
-days 或 since/until（二者互斥規則需明確）
-state（可評估 bounded comma-separated list）
+days 或 since/until（互斥）
+state（bounded comma-separated list）
 partition alias
-job-name exact match or safe bounded prefix
+job-name exact match
 account alias
 limit
 sort enum
@@ -566,6 +569,7 @@ sort enum
 - server-side filter 能安全表達時優先使用，否則在 bounded result 上 local filter。
 - `limit` 不只限制最後輸出，也要配合固定 byte cap，避免先抓取無界資料。
 - `since/until` 必須使用嚴格 ISO-like grammar、明確 timezone contract，並受最大 history window 限制。
+- 第一版時間格式固定為 cluster-local `YYYY-MM-DDTHH:MM:SS`，不接受 timezone suffix；由遠端 Slurm 依 cluster timezone 解讀。
 - sort 只接受 enum，例如 `submit_time_desc`、`start_time_desc`、`priority_desc`；不可傳 raw Slurm format/sort expression。
 - array summary 必須定義 aggregate state/count，不得因 task expansion 造成無界輸出。
 
@@ -577,12 +581,13 @@ sort enum
 {
   "ok": true,
   "query": {
-    "state": ["FAILED"],
+    "states": ["FAILED"],
     "partition": "gpu",
-    "since": "2026-10-01T00:00:00+08:00",
-    "until": "2026-10-08T23:59:59+08:00",
+    "since": "2026-10-01T00:00:00",
+    "until": "2026-10-08T00:00:00",
     "limit": 100,
-    "sort": "start_time_desc"
+    "sort": "start_time_desc",
+    "array_view": "summary"
   },
   "jobs": []
 }
@@ -604,7 +609,7 @@ no cross-user rows
 malformed and truncated output
 ```
 
-## 10. Priority 5：Node memory/GPU availability
+## 10. Priority 5：Node memory/GPU availability（已實作）
 
 ### 10.1 目的
 
@@ -614,10 +619,10 @@ malformed and truncated output
 
 ```bash
 slurm-agent nodes
-slurm-agent nodes --partition gpu --state idle --feature modern-cpu
+slurm-agent nodes --partition gpu --state idle --feature zen4-only
 ```
 
-Filters 是否全部納入第一版，可依 parser 與 policy 複雜度分批完成；回傳欄位屬於本 priority 的必要範圍。
+第一版已納入 partition alias、strict state enum 與單一 feature alias filters；回傳欄位涵蓋本 priority 的必要範圍。
 
 ### 10.2 Node fields
 

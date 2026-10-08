@@ -1,11 +1,12 @@
 import { AgentError, ExitCode } from "../errors/errors.js";
 import { resolveWorkspacePath } from "../policy/path.js";
 import type {
-  ArtifactEntry, FairShareEntry, JobSummary, JobUsage, NodeInfo, OwnedHistoryJob, OwnedJob, PartitionInfo, UsageStep,
+  ArtifactEntry, FairShareEntry, JobSummary, JobUsage, NodeInfo, OwnedHistoryJob, OwnedJob, PartitionInfo,
+  PriorityFactors, RequestedResources, UsageStep,
 } from "./types.js";
 
 function rows(output: string): string[][] {
-  return output.split(/\r?\n/).filter((line) => line.trim()).map((line) => line.split("|"));
+  return output.split(/\r?\n/).filter((line) => line.trim()).map((line) => line.split("|").map((field) => field.trim()));
 }
 
 function optionalText(value: string): string | undefined {
@@ -18,6 +19,23 @@ function optionalCount(value: string, context: string): number | undefined {
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed)) throw new AgentError("SLURM_QUERY_FAILED", `Unexpected ${context} output.`, ExitCode.SlurmFailure);
   return parsed;
+}
+
+function splitSlurmList(value: string): string[] {
+  if (!optionalText(value)) return [];
+  const entries: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    if (value[index] === "(") depth += 1;
+    else if (value[index] === ")" && depth > 0) depth -= 1;
+    else if (value[index] === "," && depth === 0) {
+      entries.push(value.slice(start, index));
+      start = index + 1;
+    }
+  }
+  entries.push(value.slice(start));
+  return entries.filter(Boolean);
 }
 
 function queueDetails(fields: string[], offset: number): Partial<JobSummary> {
@@ -133,14 +151,14 @@ export function parseClusterInfo(output: string): PartitionInfo[] {
         other: parseNonNegativeInteger(cpuFields[2]!),
         total: parseNonNegativeInteger(cpuFields[3]!),
       },
-      gres: fields[6] === "(null)" ? [] : fields[6]!.split(",").filter(Boolean),
+      gres: splitSlurmList(fields[6]!),
     };
   });
 }
 
 export function parseNodeInfo(output: string): NodeInfo[] {
   return rows(output).map((fields) => {
-    if (fields.length !== 6 || !/^[A-Za-z0-9_.-]+$/.test(fields[0]!)) {
+    if ((fields.length !== 6 && fields.length !== 15) || !/^[A-Za-z0-9_.-]+$/.test(fields[0]!)) {
       throw new AgentError("SLURM_QUERY_FAILED", "Unexpected sinfo node output.", ExitCode.SlurmFailure);
     }
     const partition = fields[1]!.replace(/\*$/, "");
@@ -151,6 +169,11 @@ export function parseNodeInfo(output: string): NodeInfo[] {
     if (cpuFields.length !== 4) {
       throw new AgentError("SLURM_QUERY_FAILED", "Unexpected sinfo node CPU summary.", ExitCode.SlurmFailure);
     }
+    const legacy = fields.length === 6;
+    const configured = splitSlurmList(fields[legacy ? 5 : 8]!);
+    const memoryTotal = legacy ? 0 : parseNonNegativeInteger(fields[5]!);
+    const allocatedMemory = legacy ? undefined : optionalCount(fields[6]!, "sinfo allocated memory");
+    const freeMemory = legacy ? undefined : optionalCount(fields[7]!, "sinfo free memory");
     return {
       node_name: fields[0]!,
       partition,
@@ -162,9 +185,93 @@ export function parseNodeInfo(output: string): NodeInfo[] {
         other: parseNonNegativeInteger(cpuFields[2]!),
         total: parseNonNegativeInteger(cpuFields[3]!),
       },
-      gres: fields[5] === "(null)" ? [] : fields[5]!.split(",").filter(Boolean),
+      gres: configured,
+      memory: {
+        total_mib: memoryTotal,
+        ...(allocatedMemory === undefined ? {} : { allocated_mib: allocatedMemory }),
+        ...(freeMemory === undefined ? {} : { free_mib: freeMemory, free_is_informational: true as const }),
+      },
+      gres_configured: configured,
+      gres_used: legacy ? [] : splitSlurmList(fields[9]!),
+      features: legacy ? [] : splitSlurmList(fields[10]!),
+      active_features: legacy ? [] : splitSlurmList(fields[11]!),
+      ...(legacy || !optionalText(fields[12]!) ? {} : { reason: fields[12] }),
+      ...(legacy || !optionalText(fields[13]!) ? {} : { reason_time: fields[13] }),
+      ...(legacy || !optionalText(fields[14]!) ? {} : {
+        temporary_disk_mib: optionalCount(fields[14]!, "sinfo temporary disk"),
+      }),
     };
   });
+}
+
+export interface JobControlDetails {
+  eligible_time?: string;
+  dependency?: string;
+  requested_resources: RequestedResources;
+}
+
+function scontrolFields(output: string): Map<string, string> {
+  const fields = new Map<string, string>();
+  const normalized = output.replace(/\r?\n/g, " ").trim();
+  const expression = /(?:^|\s)([A-Za-z][A-Za-z0-9:]+)=(.*?)(?=\s+[A-Za-z][A-Za-z0-9:]+=|$)/g;
+  for (const match of normalized.matchAll(expression)) fields.set(match[1]!, match[2]!.trim());
+  return fields;
+}
+
+export function parseJobControlDetails(output: string, requestedId: string): JobControlDetails {
+  const fields = scontrolFields(output);
+  if (fields.get("JobId") !== requestedId) {
+    throw new AgentError("SLURM_QUERY_FAILED", "Unexpected scontrol job output.", ExitCode.SlurmFailure);
+  }
+  const requestedTres = optionalText(fields.get("ReqTRES") ?? "");
+  const tresMemory = requestedTres?.split(",").find((entry) => entry.startsWith("mem="))?.slice(4);
+  const memory = optionalText(fields.get("MinMemoryNode") ?? "")
+    ?? optionalText(fields.get("MinMemoryCPU") ?? "")
+    ?? tresMemory;
+  const requestedResources: RequestedResources = {};
+  const nodes = optionalCount(fields.get("NumNodes") ?? "", "scontrol node count");
+  const cpus = optionalCount(fields.get("NumCPUs") ?? "", "scontrol CPU count");
+  if (nodes !== undefined) requestedResources.nodes = nodes;
+  if (cpus !== undefined) requestedResources.cpus = cpus;
+  if (memory !== undefined) requestedResources.memory = memory;
+  if (requestedTres !== undefined) requestedResources.tres = requestedTres;
+  return {
+    ...(optionalText(fields.get("EligibleTime") ?? "") ? { eligible_time: fields.get("EligibleTime") } : {}),
+    ...(optionalText(fields.get("Dependency") ?? "") ? { dependency: fields.get("Dependency") } : {}),
+    requested_resources: requestedResources,
+  };
+}
+
+function optionalSignedInteger(value: string, context: string): number | undefined {
+  if (!optionalText(value)) return undefined;
+  if (!/^-?\d+$/.test(value)) {
+    throw new AgentError("SLURM_QUERY_FAILED", `Unexpected ${context} output.`, ExitCode.SlurmFailure);
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) {
+    throw new AgentError("SLURM_QUERY_FAILED", `Unexpected ${context} output.`, ExitCode.SlurmFailure);
+  }
+  return parsed;
+}
+
+export function parsePriorityFactors(output: string, requestedId: string): PriorityFactors | undefined {
+  const matching = rows(output).find((fields) => fields[0] === requestedId);
+  if (!matching) return undefined;
+  if (matching.length !== 11) {
+    throw new AgentError("SLURM_QUERY_FAILED", "Unexpected sprio output.", ExitCode.SlurmFailure);
+  }
+  const priority: PriorityFactors = { available: true };
+  const numericFields: Array<[keyof Omit<PriorityFactors, "available" | "tres">, number]> = [
+    ["total", 1], ["age", 2], ["association", 3], ["fairshare", 4], ["job_size", 5],
+    ["partition", 6], ["qos", 7], ["nice", 9], ["site", 10],
+  ];
+  numericFields.forEach(([key, index]) => {
+    const value = optionalSignedInteger(matching[index]!, "sprio");
+    if (value !== undefined) Object.assign(priority, { [key]: value });
+  });
+  const tres = optionalText(matching[8]!);
+  if (tres !== undefined) priority.tres = tres;
+  return priority;
 }
 
 function parseCount(value: string, context: string): number {

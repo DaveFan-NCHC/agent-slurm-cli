@@ -6,6 +6,7 @@ import { runArtifact } from "./commands/artifact.js";
 import { runArtifacts } from "./commands/artifacts.js";
 import { runCancel } from "./commands/cancel.js";
 import { runClusterInfo } from "./commands/cluster-info.js";
+import { runDiagnose } from "./commands/diagnose.js";
 import { runFairshare } from "./commands/fairshare.js";
 import { runHistory } from "./commands/history.js";
 import { runHold } from "./commands/hold.js";
@@ -25,7 +26,9 @@ import { AgentError, ExitCode, invalid } from "./errors/errors.js";
 import { loadPolicy } from "./policy/loader.js";
 import { prepareLocalScript } from "./policy/script.js";
 import {
-  parsePositiveInteger, validateHistoryState, validateJobId, validateSignal, validateSubmit, validateUpdate,
+  parsePositiveInteger, validateArrayView, validateHistorySort, validateHistoryWindow, validateJobId,
+  validateJobSort, validateJobStates, validateNodeFeature, validateNodeState, validateQueryAccount,
+  validateQueryName, validateQueryPartition, validateSignal, validateSubmit, validateUpdate,
   type SubmitOptions, type UpdateOptions,
 } from "./policy/validator.js";
 import { SlurmClient } from "./slurm/client.js";
@@ -38,11 +41,15 @@ const HELP = `slurm-agent ${VERSION}
 Usage:
   slurm-agent submit [options] SCRIPT [SCRIPT_ARGS...]
   slurm-agent cluster-info
-  slurm-agent nodes
-  slurm-agent list
-  slurm-agent history [--days N] [--state STATE] [--limit N]
+  slurm-agent nodes [--partition NAME] [--state STATE] [--feature ALIAS]
+  slurm-agent list [--state STATES] [--partition NAME] [--name NAME] [--account ALIAS]
+                   [--limit N] [--sort SORT] [--array-view expanded|summary]
+  slurm-agent history [--days N | --since TIME --until TIME] [--state STATES]
+                      [--partition NAME] [--name NAME] [--account ALIAS]
+                      [--limit N] [--sort SORT] [--array-view expanded|summary]
   slurm-agent fairshare
   slurm-agent status JOB_ID
+  slurm-agent diagnose JOB_ID
   slurm-agent usage JOB_ID
   slurm-agent cancel JOB_ID
   slurm-agent hold JOB_ID
@@ -158,19 +165,33 @@ function prevalidateShape(parsed: Parsed): void {
     case "submit":
       enforceSubmitShape(parsed);
       break;
-    case "list":
     case "cluster-info":
-    case "nodes":
     case "fairshare":
       enforceShape(parsed, [], 0);
       break;
+    case "list":
+      enforceShape(parsed, ["state", "partition", "name", "account", "limit", "sort", "array-view"], 0);
+      if (parsed.options.has("state")) validateJobStates(parsed.options.get("state")!);
+      if (parsed.options.has("limit")) parsePositiveInteger(parsed.options.get("limit")!, "--limit");
+      if (parsed.options.has("sort")) validateJobSort(parsed.options.get("sort")!);
+      if (parsed.options.has("array-view")) validateArrayView(parsed.options.get("array-view")!);
+      break;
+    case "nodes":
+      enforceShape(parsed, ["partition", "state", "feature"], 0);
+      if (parsed.options.has("state")) validateNodeState(parsed.options.get("state")!);
+      break;
     case "history":
-      enforceShape(parsed, ["days", "state", "limit"], 0);
+      enforceShape(parsed, [
+        "days", "since", "until", "state", "partition", "name", "account", "limit", "sort", "array-view",
+      ], 0);
       if (parsed.options.has("days")) parsePositiveInteger(parsed.options.get("days")!, "--days");
       if (parsed.options.has("limit")) parsePositiveInteger(parsed.options.get("limit")!, "--limit");
-      if (parsed.options.has("state")) validateHistoryState(parsed.options.get("state")!);
+      if (parsed.options.has("state")) validateJobStates(parsed.options.get("state")!);
+      if (parsed.options.has("sort")) validateHistorySort(parsed.options.get("sort")!);
+      if (parsed.options.has("array-view")) validateArrayView(parsed.options.get("array-view")!);
       break;
     case "status":
+    case "diagnose":
     case "cancel":
     case "hold":
     case "release":
@@ -272,6 +293,60 @@ function parseUpdate(parsed: Parsed, policy: ReturnType<typeof loadPolicy>): Ret
   return validateUpdate(options, policy);
 }
 
+function parseListQuery(parsed: Parsed, policy: ReturnType<typeof loadPolicy>) {
+  const limit = parsePositiveInteger(
+    parsed.options.get("limit") ?? String(Math.min(50, policy.maxListJobs)), "--limit",
+  );
+  if (limit > policy.maxListJobs) {
+    throw new AgentError(
+      "RESOURCE_LIMIT_EXCEEDED", `--limit exceeds policy maximum ${policy.maxListJobs}.`, ExitCode.PolicyDenied,
+    );
+  }
+  return {
+    states: parsed.options.has("state") ? validateJobStates(parsed.options.get("state")!) : undefined,
+    partition: validateQueryPartition(parsed.options.get("partition"), policy),
+    name: validateQueryName(parsed.options.get("name")),
+    account: validateQueryAccount(parsed.options.get("account"), policy),
+    limit,
+    sort: validateJobSort(parsed.options.get("sort") ?? "submit_time_desc"),
+    array_view: validateArrayView(parsed.options.get("array-view") ?? "expanded"),
+  };
+}
+
+function parseHistoryQuery(parsed: Parsed, policy: ReturnType<typeof loadPolicy>) {
+  if (parsed.options.has("days") && (parsed.options.has("since") || parsed.options.has("until"))) {
+    throw invalid("--days cannot be combined with --since or --until.");
+  }
+  const window = validateHistoryWindow(parsed.options.get("since"), parsed.options.get("until"), policy);
+  const days = window.since === undefined
+    ? parsePositiveInteger(parsed.options.get("days") ?? String(Math.min(7, policy.maxHistoryDays)), "--days")
+    : undefined;
+  if (days !== undefined && days > policy.maxHistoryDays) {
+    throw new AgentError(
+      "RESOURCE_LIMIT_EXCEEDED", `--days exceeds policy maximum ${policy.maxHistoryDays}.`, ExitCode.PolicyDenied,
+    );
+  }
+  const limit = parsePositiveInteger(
+    parsed.options.get("limit") ?? String(Math.min(50, policy.maxHistoryJobs)), "--limit",
+  );
+  if (limit > policy.maxHistoryJobs) {
+    throw new AgentError(
+      "RESOURCE_LIMIT_EXCEEDED", `--limit exceeds policy maximum ${policy.maxHistoryJobs}.`, ExitCode.PolicyDenied,
+    );
+  }
+  return {
+    ...(days === undefined ? {} : { days }),
+    ...window,
+    states: parsed.options.has("state") ? validateJobStates(parsed.options.get("state")!) : undefined,
+    partition: validateQueryPartition(parsed.options.get("partition"), policy),
+    name: validateQueryName(parsed.options.get("name")),
+    account: validateQueryAccount(parsed.options.get("account"), policy),
+    limit,
+    sort: validateHistorySort(parsed.options.get("sort") ?? "start_time_desc"),
+    array_view: validateArrayView(parsed.options.get("array-view") ?? "summary"),
+  };
+}
+
 function writeJson(output: Writer, value: unknown): void { output.write(`${JSON.stringify(value)}\n`); }
 
 export async function main(
@@ -293,7 +368,7 @@ export async function main(
   try {
     const parsed = parseArgs(argv);
     action = parsed.command;
-    if (!["submit", "cluster-info", "nodes", "list", "history", "fairshare", "status", "usage", "cancel", "hold", "release", "requeue", "update", "signal", "logs", "artifact", "artifacts", "wait"].includes(parsed.command)) {
+    if (!["submit", "cluster-info", "nodes", "list", "history", "fairshare", "status", "diagnose", "usage", "cancel", "hold", "release", "requeue", "update", "signal", "logs", "artifact", "artifacts", "wait"].includes(parsed.command)) {
       throw invalid(`Unknown command: ${parsed.command}.`);
     }
     prevalidateShape(parsed);
@@ -309,44 +384,45 @@ export async function main(
     const context = { client, audit, sshUser: config.ssh.user };
     let response: Record<string, unknown>;
     switch (parsed.command) {
-      case "list":
-        enforceShape(parsed, [], 0);
-        response = await runList(context);
+      case "list": {
+        const query = parseListQuery(parsed, policy);
+        auditResources = query;
+        response = await runList(context, query);
         break;
+      }
       case "cluster-info":
         enforceShape(parsed, [], 0);
         response = await runClusterInfo(context);
         break;
-      case "nodes":
-        enforceShape(parsed, [], 0);
-        response = await runNodes(context);
+      case "nodes": {
+        const query = {
+          partition: validateQueryPartition(parsed.options.get("partition"), policy),
+          state: validateNodeState(parsed.options.get("state")),
+          feature: validateNodeFeature(parsed.options.get("feature"), policy),
+        };
+        auditResources = query;
+        response = await runNodes(context, query);
         break;
+      }
       case "fairshare":
         enforceShape(parsed, [], 0);
         response = await runFairshare(context);
         break;
       case "history": {
-        const days = parsePositiveInteger(
-          parsed.options.get("days") ?? String(Math.min(7, policy.maxHistoryDays)), "--days",
-        );
-        const limit = parsePositiveInteger(
-          parsed.options.get("limit") ?? String(Math.min(50, policy.maxHistoryJobs)), "--limit",
-        );
-        const state = parsed.options.has("state") ? validateHistoryState(parsed.options.get("state")!) : undefined;
-        if (days > policy.maxHistoryDays) {
-          throw new AgentError("RESOURCE_LIMIT_EXCEEDED", `--days exceeds policy maximum ${policy.maxHistoryDays}.`, ExitCode.PolicyDenied);
-        }
-        if (limit > policy.maxHistoryJobs) {
-          throw new AgentError("RESOURCE_LIMIT_EXCEEDED", `--limit exceeds policy maximum ${policy.maxHistoryJobs}.`, ExitCode.PolicyDenied);
-        }
-        auditResources = { days, state, limit };
-        response = await runHistory(context, days, state, limit);
+        const query = parseHistoryQuery(parsed, policy);
+        auditResources = query;
+        response = await runHistory(context, query);
         break;
       }
       case "status":
         enforceShape(parsed, [], 1);
         jobId = validateJobId(parsed.positionals[0]!);
         response = await runStatus(context, jobId);
+        break;
+      case "diagnose":
+        enforceShape(parsed, [], 1);
+        jobId = validateJobId(parsed.positionals[0]!);
+        response = await runDiagnose(context, jobId);
         break;
       case "usage":
         enforceShape(parsed, [], 1);

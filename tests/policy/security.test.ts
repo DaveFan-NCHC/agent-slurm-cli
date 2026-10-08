@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveLocalArtifactPath, resolveWorkspacePath } from "../../src/policy/path.js";
 import {
-  validateArray, validateDependency, validateHistoryState, validateJobId, validateSignal,
+  validateArray, validateArrayView, validateDependency, validateHistorySort, validateHistoryState,
+  validateHistoryWindow, validateJobId, validateJobSort, validateJobStates, validateNodeFeature,
+  validateNodeState, validateQueryAccount, validateQueryName, validateQueryPartition, validateSignal,
   validateSubmit, validateUpdate,
 } from "../../src/policy/validator.js";
 import type { Policy } from "../../src/policy/types.js";
@@ -13,7 +15,7 @@ const policy: Policy = {
   allowedPartitions: ["slurm-test"], maxNodes: 2, maxNtasks: 16, maxNtasksPerNode: 8, maxCpusPerTask: 8,
   maxMemoryGb: 64, maxGpus: 4, maxGpusPerNode: 4, maxGpusPerTask: 2, allowExclusive: true,
   maxTimeMinutes: 240, maxWaitSeconds: 3600,
-  maxHistoryDays: 30, maxHistoryJobs: 200,
+  maxHistoryDays: 30, maxHistoryJobs: 200, maxListJobs: 200,
   maxArrayTasks: 1000, maxArrayConcurrency: 32, maxDependencyJobs: 16,
   allowedDependencyTypes: ["after", "afterany", "aftercorr", "afternotok", "afterok", "singleton"],
   maxLogLines: 1000, maxLogBytes: 1048576,
@@ -260,4 +262,33 @@ describe("history filters", () => {
     "rejects unsupported state %j",
     (state) => expect(() => validateHistoryState(state)).toThrow(),
   );
+  it("accepts bounded multi-state and explicit time filters", () => {
+    expect(validateJobStates("completed,failed")).toEqual(["COMPLETED", "FAILED"]);
+    expect(validateHistoryWindow("2026-10-01T00:00:00", "2026-10-08T00:00:00", policy)).toEqual({
+      since: "2026-10-01T00:00:00", until: "2026-10-08T00:00:00",
+    });
+  });
+  it("rejects unsafe or over-policy query filters", () => {
+    expect(() => validateHistoryWindow("2026-01-01T00:00:00", "2026-10-08T00:00:00", policy)).toThrow();
+    expect(() => validateHistoryWindow("2026-10-08", "2026-10-09", policy)).toThrow();
+    expect(() => validateHistoryWindow("2026-02-30T00:00:00", "2026-03-01T00:00:00", policy)).toThrow();
+    expect(() => validateQueryPartition("admin", policy)).toThrowError(
+      expect.objectContaining({ code: "PARTITION_NOT_ALLOWED" }),
+    );
+    expect(() => validateQueryAccount("unknown", policy)).toThrowError(
+      expect.objectContaining({ code: "ACCOUNT_ALIAS_NOT_ALLOWED" }),
+    );
+    expect(() => validateQueryName("name;id")).toThrow();
+    expect(() => validateJobSort("%i")).toThrow();
+    expect(() => validateHistorySort("Start desc")).toThrow();
+    expect(() => validateArrayView("all")).toThrow();
+  });
+  it("validates node state and concrete feature aliases", () => {
+    expect(validateNodeState("idle")).toBe("IDLE");
+    expect(() => validateNodeState("idle,down")).toThrow();
+    expect(validateNodeFeature("zen4", {
+      ...policy, allowedConstraints: { ...policy.allowedConstraints, zen4: "zen4" },
+    })).toBe("zen4");
+    expect(() => validateNodeFeature("modern", policy)).toThrow();
+  });
 });

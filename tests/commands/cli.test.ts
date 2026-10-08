@@ -66,12 +66,12 @@ describe("CLI boundary", () => {
   it.each([
     ["submit", "--script", "jobs/a.sh", "--partition", "p", "--export", "ALL"],
     ["cancel", "1", "--user", "all"],
-    ["list", "--partition", "gpu"],
+    ["list", "--sort", "%i"],
     ["logs", "1", "--path", "/etc/passwd"],
     ["artifact", "1", "--output", "/etc/passwd"],
     ["artifact", "1", "--path", "../../etc/passwd", "--overwrite", "true"],
     ["cluster-info", "--partition", "gpu"],
-    ["nodes", "--partition", "gpu"],
+    ["nodes", "--state", "NOT_A_NODE_STATE"],
     ["wait", "1", "--poll-interval", "0"],
     ["history", "--days", "0"],
     ["history", "--state", "NOT_A_STATE"],
@@ -285,7 +285,27 @@ require_apptainer_for_generated_scripts: false
         env, historyOutput, new Sink() as never, () => historyRemote,
       )).toBe(0);
       expect(JSON.parse(historyOutput.value)).toMatchObject({
-        ok: true, query: { days: 7, state: "COMPLETED", limit: 10 }, jobs: [{ job_id: "43" }],
+        ok: true,
+        query: { days: 7, states: ["COMPLETED"], limit: 10, sort: "start_time_desc", array_view: "summary" },
+        jobs: [{ job_id: "43" }],
+      });
+
+      const diagnoseActive = [
+        "45", "alice", "job", "p", "PENDING", "0:00", "Priority", "100", "Unknown",
+        "2026-10-08T09:00:00", "01:00:00", "01:00:00", "", "1", "1", "", "", "",
+      ].join("|");
+      const diagnoseRemote = new QueryExecutor([
+        { stdout: `${diagnoseActive}\n`, stderr: "", exitCode: 0 },
+        { stdout: "JobId=45 JobState=PENDING NumNodes=1 NumCPUs=1 ReqTRES=cpu=1,mem=1G,node=1", stderr: "", exitCode: 0 },
+        { stdout: "45|100|10|0|80|0|10|0|0|0|0\n", stderr: "", exitCode: 0 },
+      ]);
+      const diagnoseOutput = new Sink();
+      expect(await main(
+        ["diagnose", "45"], env, diagnoseOutput, new Sink() as never, () => diagnoseRemote,
+      )).toBe(0);
+      expect(JSON.parse(diagnoseOutput.value)).toMatchObject({
+        ok: true, job_id: "45", priority: { available: true },
+        findings: [{ code: "WAITING_FOR_PRIORITY" }],
       });
 
       const usageRow = [
