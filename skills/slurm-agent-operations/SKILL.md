@@ -1,6 +1,6 @@
 ---
 name: slurm-agent-operations
-description: "Operate jobs through the constrained slurm-agent CLI, including staged input bundles, safe single/srun launchers, MPI/GPU resource placement, arrays and dependencies, filtered queue/history and node-resource inspection, pending-job diagnosis, fair-share inspection, safe job updates and signals, lifecycle controls, logs, and controlled artifact listing/downloads. Use for Slurm job lifecycle requests handled by this project; do not use it for cluster administration or generic SSH access."
+description: "Inspect effective policy and operate jobs through the constrained slurm-agent CLI, including staged input bundles, safe single/srun launchers, MPI/GPU resource placement, arrays and dependencies, filtered queue/history and node-resource inspection, pending-job diagnosis, fair-share inspection, safe job updates and signals, lifecycle controls, logs, and controlled artifact listing/downloads. Use for Slurm job lifecycle requests handled by this project; do not use it for cluster administration or generic SSH access."
 ---
 
 # Slurm Agent Operations
@@ -9,7 +9,7 @@ Use the installed `slurm-agent` executable as the only interface to the remote S
 
 ## Boundaries
 
-- Invoke only `submit`, `cluster-info`, `nodes`, `list`, `history`, `fairshare`, `status`, `diagnose`, `usage`, `wait`, `logs`, `cancel`, `hold`, `release`, `requeue`, `update`, `signal`, `artifacts`, or `artifact`.
+- Invoke only `submit`, `policy`, `cluster-info`, `nodes`, `list`, `history`, `fairshare`, `status`, `diagnose`, `usage`, `wait`, `logs`, `cancel`, `hold`, `release`, `requeue`, `update`, `signal`, `artifacts`, or `artifact`.
 - Never invoke or propose `ssh`, `exec`, `shell`, `run`, `scp`, `sftp`, arbitrary remote commands, or arbitrary remote/local paths.
 - Treat stdout as the machine-readable JSON response. Audit records may appear on stderr and must not be mixed into JSON parsing.
 - Do not expose SSH keys, credentials, or trusted `SLURM_*` environment values.
@@ -144,6 +144,7 @@ Do not automatically retry an ambiguous failed submission, because the first sub
 ### Cluster information, filtered queries, diagnosis, usage, and wait
 
 ```bash
+slurm-agent policy
 slurm-agent cluster-info
 slurm-agent nodes --partition slurm-test --state idle
 slurm-agent nodes --feature zen4-only
@@ -157,7 +158,7 @@ slurm-agent usage 12345
 slurm-agent wait 12345 --timeout 3600 --poll-interval 10
 ```
 
-`cluster-info` returns only policy-allowed partition summaries. `nodes` reports node CPU, total/allocated/free memory, configured/used GRES, features, temporary disk, and unavailable reasons. Treat `memory.free_mib` as informational rather than scheduler-available memory. Partition filters must remain in `allowed_partitions`; `--feature` accepts only a policy constraint alias that resolves to one concrete feature.
+Use `policy` to inspect the validated effective limits, allowlists, and aliases before planning a submission. The command is read-only; do not look for or propose a policy mutation interface. `cluster-info` returns only policy-allowed partition summaries. `nodes` reports node CPU, total/allocated/free memory, configured/used GRES, features, temporary disk, and unavailable reasons. Treat `memory.free_mib` as informational rather than scheduler-available memory. Partition filters must remain in `allowed_partitions`; `--feature` accepts only a policy constraint alias that resolves to one concrete feature.
 
 `list` returns only active jobs belonging to the configured SSH user. Use its bounded state, partition, exact name, account-alias, sort, limit, and array-view filters instead of fetching unrelated jobs. `history` returns bounded accounting records for that fixed user and accepts the same selectors. Use either `--days` or a paired `--since`/`--until`, never both; explicit timestamps are cluster-local `YYYY-MM-DDTHH:MM:SS` values. Keep result and time windows within policy.
 

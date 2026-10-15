@@ -62,6 +62,7 @@ describe("CLI boundary", () => {
     const stdout = new Sink();
     expect(await main(["--help"], {}, stdout)).toBe(0);
     expect(stdout.value).toContain("slurm-agent submit");
+    expect(stdout.value).toContain("slurm-agent policy");
   });
   it.each([
     ["submit", "--script", "jobs/a.sh", "--partition", "p", "--export", "ALL"],
@@ -71,6 +72,7 @@ describe("CLI boundary", () => {
     ["artifact", "1", "--output", "/etc/passwd"],
     ["artifact", "1", "--path", "../../etc/passwd", "--overwrite", "true"],
     ["cluster-info", "--partition", "gpu"],
+    ["policy", "--set", "max_nodes=99"],
     ["nodes", "--state", "NOT_A_NODE_STATE"],
     ["wait", "1", "--poll-interval", "0"],
     ["history", "--days", "0"],
@@ -261,6 +263,10 @@ max_dependency_jobs: 8
 allowed_dependency_types: [afterok, afterany, afternotok]
 max_artifact_files: 100
 allowed_signals: [TERM, USR1]
+allowed_apptainer_images:
+  pytorch: /opt/apptainer/pytorch.sif
+allowed_accounts:
+  research: proj123
 require_apptainer_for_generated_scripts: false
 `);
       const env = {
@@ -268,6 +274,59 @@ require_apptainer_for_generated_scripts: false
         SLURM_SSH_KNOWN_HOSTS: join(root, "known_hosts"), SLURM_REMOTE_WORKSPACE: "/work",
         SLURM_POLICY_PATH: join(root, "policy.yaml"),
       };
+
+      const policyRemote = new QueryExecutor([]);
+      const policyOutput = new Sink();
+      expect(await main(["policy"], env, policyOutput, new Sink() as never, () => policyRemote)).toBe(0);
+      expect(JSON.parse(policyOutput.value)).toEqual({
+        ok: true,
+        policy: {
+          allowed_partitions: ["p"],
+          max_nodes: 2,
+          max_ntasks: 4,
+          max_ntasks_per_node: 4,
+          max_cpus_per_task: 2,
+          max_memory_gb: 8,
+          max_gpus: 2,
+          max_gpus_per_node: 2,
+          max_gpus_per_task: 1,
+          allow_exclusive: false,
+          max_time_minutes: 60,
+          max_wait_seconds: 60,
+          max_history_days: 30,
+          max_history_jobs: 100,
+          max_list_jobs: 200,
+          max_input_files: 0,
+          max_input_file_bytes: 0,
+          max_input_total_bytes: 0,
+          max_array_tasks: 100,
+          max_array_concurrency: 10,
+          max_dependency_jobs: 8,
+          allowed_dependency_types: ["afterok", "afterany", "afternotok"],
+          allowed_launchers: ["single"],
+          allowed_mpi_modes: [],
+          allowed_distributions: [],
+          max_log_lines: 1000,
+          max_log_bytes: 1048576,
+          max_artifact_bytes: 104857600,
+          max_artifact_files: 100,
+          allowed_signals: ["TERM", "USR1"],
+          allowed_apptainer_images: { pytorch: "/opt/apptainer/pytorch.sif" },
+          allowed_virtualenvs: {},
+          allowed_gres: {},
+          allowed_accounts: { research: "proj123" },
+          allowed_qos: {},
+          allowed_constraints: {},
+          allowed_nodelists: {},
+          allowed_exclude_nodelists: {},
+          allowed_reservations: {},
+          max_script_bytes: 65536,
+          max_script_args: 32,
+          max_script_arg_length: 1024,
+          require_apptainer_for_generated_scripts: false,
+        },
+      });
+      expect(policyRemote.commands).toEqual([]);
 
       const clusterRemote = new QueryExecutor([
         { stdout: "p*|up|01:00:00|1|idle|0/8/0/8|(null)\n", stderr: "", exitCode: 0 },

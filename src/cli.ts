@@ -13,6 +13,7 @@ import { runHold } from "./commands/hold.js";
 import { runList } from "./commands/list.js";
 import { runLogs } from "./commands/logs.js";
 import { runNodes } from "./commands/nodes.js";
+import { runPolicy } from "./commands/policy.js";
 import { runRelease } from "./commands/release.js";
 import { runRequeue } from "./commands/requeue.js";
 import { runSignal } from "./commands/signal.js";
@@ -41,6 +42,7 @@ const HELP = `slurm-agent ${VERSION}
 
 Usage:
   slurm-agent submit [options] SCRIPT [SCRIPT_ARGS...]
+  slurm-agent policy
   slurm-agent cluster-info
   slurm-agent nodes [--partition NAME] [--state STATE] [--feature ALIAS]
   slurm-agent list [--state STATES] [--partition NAME] [--name NAME] [--account ALIAS]
@@ -187,6 +189,7 @@ function prevalidateShape(parsed: Parsed): void {
     case "submit":
       enforceSubmitShape(parsed);
       break;
+    case "policy":
     case "cluster-info":
     case "fairshare":
       enforceShape(parsed, [], 0);
@@ -393,7 +396,7 @@ export async function main(
   try {
     const parsed = parseArgs(argv);
     action = parsed.command;
-    if (!["submit", "cluster-info", "nodes", "list", "history", "fairshare", "status", "diagnose", "usage", "cancel", "hold", "release", "requeue", "update", "signal", "logs", "artifact", "artifacts", "wait"].includes(parsed.command)) {
+    if (!["submit", "policy", "cluster-info", "nodes", "list", "history", "fairshare", "status", "diagnose", "usage", "cancel", "hold", "release", "requeue", "update", "signal", "logs", "artifact", "artifacts", "wait"].includes(parsed.command)) {
       throw invalid(`Unknown command: ${parsed.command}.`);
     }
     prevalidateShape(parsed);
@@ -409,6 +412,9 @@ export async function main(
     const context = { client, audit, sshUser: config.ssh.user };
     let response: Record<string, unknown>;
     switch (parsed.command) {
+      case "policy":
+        response = runPolicy(context, policy);
+        break;
       case "list": {
         const query = parseListQuery(parsed, policy);
         auditResources = query;

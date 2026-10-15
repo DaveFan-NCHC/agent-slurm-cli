@@ -6,6 +6,7 @@ The public interface contains only these Slurm lifecycle operations:
 
 ```text
 slurm-agent submit
+slurm-agent policy
 slurm-agent cluster-info
 slurm-agent nodes
 slurm-agent list
@@ -305,6 +306,7 @@ The script must be valid UTF-8, begin with a shebang, fit the policy size limit,
 Other operations:
 
 ```bash
+slurm-agent policy
 slurm-agent cluster-info
 slurm-agent nodes --partition slurm-test --state idle
 slurm-agent nodes --feature zen4-only
@@ -330,7 +332,7 @@ slurm-agent signal 12345 --signal USR1 --scope batch
 slurm-agent artifacts 12345
 ```
 
-`cluster-info` returns partition-level availability, time limit, node state, CPU counts, and configured GRES only for `allowed_partitions`. `nodes` returns node state, CPU state, total/allocated/free memory, configured/used GRES, available/active features, temporary disk, and unavailable reason fields. `free_mib` is an informational OS report and is not scheduler-available memory. Node queries may be narrowed by an allowed partition, a supported node state, or a policy constraint alias that resolves to one concrete feature.
+`policy` returns the validated effective policy, including loader defaults, as JSON. It is read-only: the CLI does not provide a policy mutation interface. `cluster-info` returns partition-level availability, time limit, node state, CPU counts, and configured GRES only for `allowed_partitions`. `nodes` returns node state, CPU state, total/allocated/free memory, configured/used GRES, available/active features, temporary disk, and unavailable reason fields. `free_mib` is an informational OS report and is not scheduler-available memory. Node queries may be narrowed by an allowed partition, a supported node state, or a policy constraint alias that resolves to one concrete feature.
 
 `list` remains fixed to the configured SSH user and supports bounded state, allowed partition, safe exact job name, account alias, sort, limit, and expanded/summary array views. `max_list_jobs` caps the result count. `history` adds the same partition/name/account filtering, comma-separated states, sorting, array views, and either bounded `--days` or an explicit `--since`/`--until` pair. Explicit timestamps use `YYYY-MM-DDTHH:MM:SS` in the Slurm cluster's local time. `--days` and explicit timestamps are mutually exclusive.
 

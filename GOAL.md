@@ -67,6 +67,7 @@ interactive remote terminal
 
 ```text
 slurm-agent submit
+slurm-agent policy
 slurm-agent cluster-info
 slurm-agent nodes
 slurm-agent list
@@ -89,6 +90,7 @@ slurm-agent wait JOB_ID
 
 已完成的能力包括：
 
+- read-only effective policy inspection；不提供 policy 修改介面。
 - 受控 script staging 與 `sbatch` 提交。
 - nodes、tasks、CPU、memory、GPU/GRES、walltime 等有界資源請求。
 - account、QOS、constraint、nodelist、exclude、reservation 的 operator-defined aliases。
