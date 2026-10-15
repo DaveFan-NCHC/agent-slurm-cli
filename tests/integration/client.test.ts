@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { SlurmClient } from "../../src/slurm/client.js";
 import type { Policy } from "../../src/policy/types.js";
 import type {
-  RemoteExecutor, RemoteResult, SafeCommand, SafeSubmissionUpload,
+  ArtifactDownload, RemoteExecutor, RemoteResult, SafeArtifactBundleTransfer, SafeArtifactTransfer, SafeCommand,
+  SafeSubmissionUpload,
 } from "../../src/transport/types.js";
 
 const policy: Policy = {
@@ -30,7 +31,8 @@ const policy: Policy = {
 
 class MockExecutor implements RemoteExecutor {
   readonly commands: SafeCommand[] = [];
-  readonly downloads: Array<{ remotePath: string; localPath: string; maxBytes: number }> = [];
+  readonly downloads: SafeArtifactTransfer[] = [];
+  readonly bundleDownloads: SafeArtifactBundleTransfer[] = [];
   readonly uploads: SafeSubmissionUpload[] = [];
   constructor(private readonly results: RemoteResult[]) {}
   async run(command: SafeCommand): Promise<RemoteResult> {
@@ -39,9 +41,13 @@ class MockExecutor implements RemoteExecutor {
     if (!result) throw new Error("Missing mock result");
     return result;
   }
-  async downloadArtifact({ remotePath, localPath, maxBytes }: { remotePath: string; localPath: string; maxBytes: number }): Promise<{ bytes: number }> {
-    this.downloads.push({ remotePath, localPath, maxBytes });
-    return { bytes: 5 };
+  async downloadArtifact(transfer: SafeArtifactTransfer): Promise<ArtifactDownload> {
+    this.downloads.push(transfer);
+    return { bytes: 5, sha256: "a".repeat(64), overwritten: transfer.overwrite === true };
+  }
+  async downloadArtifactBundle(transfer: SafeArtifactBundleTransfer): Promise<ArtifactDownload> {
+    this.bundleDownloads.push(transfer);
+    return { bytes: 11, sha256: "b".repeat(64), overwritten: transfer.overwrite === true };
   }
   async uploadSubmission(upload: SafeSubmissionUpload): Promise<{ bytes: number }> {
     const { remotePath, content } = upload;
@@ -836,12 +842,78 @@ describe("Slurm client security boundaries", () => {
       ok("/work/.slurm-agent/artifacts/44\n"), ok("/work/.slurm-agent/artifacts/44/results/model.bin\n"),
     ]);
     const client = new SlurmClient(remote, "alice", "/work", policy, "/tmp/slurm-agent-test-artifacts");
-    await expect(client.artifact("44", "results/model.bin")).resolves.toMatchObject({ bytes: 5 });
+    await expect(client.artifact("44", "results/model.bin")).resolves.toMatchObject({
+      bytes: 5, sha256: "a".repeat(64), overwritten: false,
+    });
     expect(remote.downloads).toHaveLength(1);
     expect(remote.downloads[0]).toMatchObject({
       remotePath: "/work/.slurm-agent/artifacts/44/results/model.bin", maxBytes: 4096,
     });
     expect(remote.commands.some((command) => command.executable === "test")).toBe(false);
+  });
+
+  it("streams a bounded archive of the owned job artifact directory", async () => {
+    const remote = new MockExecutor([
+      ok("44|alice|job|p|COMPLETED|00:01\n"), ok("/work\n"),
+      ok("/work/.slurm-agent/artifacts/44\n"), ok(), ok("/work/.slurm-agent/bundles\n"),
+    ]);
+    const client = new SlurmClient(remote, "alice", "/work", policy, "/tmp/slurm-agent-test-artifacts");
+    await expect(client.artifactBundle("44")).resolves.toMatchObject({
+      job_id: "44", format: "tar.gz", bytes: 11,
+      sha256: "b".repeat(64), overwritten: false,
+      local_path: "/tmp/slurm-agent-test-artifacts/44/artifacts.tar.gz",
+    });
+    expect(remote.bundleDownloads).toHaveLength(1);
+    expect(remote.bundleDownloads[0]).toMatchObject({
+      remoteDirectory: "/work/.slurm-agent/artifacts/44",
+      remoteArchivePath: expect.stringMatching(/^\/work\/\.slurm-agent\/bundles\/[0-9a-f-]+\.tar\.gz$/),
+      localPath: "/tmp/slurm-agent-test-artifacts/44/artifacts.tar.gz",
+      maxBytes: 4096,
+    });
+  });
+
+  it("downloads a contained artifact prefix with a collision-resistant local name", async () => {
+    const remote = new MockExecutor([
+      ok("44|alice|job|p|COMPLETED|00:01\n"), ok("/work\n"),
+      ok("/work/.slurm-agent/artifacts/44\n"),
+      ok("/work/.slurm-agent/artifacts/44/airfoil_unsteady/VTK\n"), ok(),
+      ok(), ok("/work/.slurm-agent/bundles\n"),
+    ]);
+    const client = new SlurmClient(remote, "alice", "/work", policy, "/tmp/slurm-agent-test-artifacts");
+    await expect(client.artifactBundle("44", {
+      prefix: "airfoil_unsteady/VTK", overwrite: true,
+    })).resolves.toMatchObject({
+      prefix: "airfoil_unsteady/VTK", overwritten: true,
+      local_path: expect.stringMatching(/\/44\/artifacts-VTK-[a-f0-9]{8}\.tar\.gz$/),
+    });
+    expect(remote.bundleDownloads[0]).toMatchObject({
+      prefix: "airfoil_unsteady/VTK", overwrite: true,
+      remoteDirectory: "/work/.slurm-agent/artifacts/44",
+    });
+    expect(remote.commands).toContainEqual({
+      executable: "test", args: ["-d", "/work/.slurm-agent/artifacts/44/airfoil_unsteady/VTK"],
+    });
+  });
+
+  it("rejects an artifact prefix that resolves through a symlink", async () => {
+    const remote = new MockExecutor([
+      ok("44|alice|job|p|COMPLETED|00:01\n"), ok("/work\n"),
+      ok("/work/.slurm-agent/artifacts/44\n"),
+      ok("/work/.slurm-agent/artifacts/44/real-VTK\n"),
+    ]);
+    const client = new SlurmClient(remote, "alice", "/work", policy, "/tmp/slurm-agent-test-artifacts");
+    await expect(client.artifactBundle("44", { prefix: "VTK" }))
+      .rejects.toMatchObject({ code: "PATH_NOT_ALLOWED" });
+    expect(remote.bundleDownloads).toHaveLength(0);
+  });
+
+  it("rejects an artifact bundle directory outside the workspace", async () => {
+    const remote = new MockExecutor([
+      ok("44|alice|job|p|COMPLETED|00:01\n"), ok("/work\n"), ok("/etc\n"),
+    ]);
+    const client = new SlurmClient(remote, "alice", "/work", policy, "/tmp/slurm-agent-test-artifacts");
+    await expect(client.artifactBundle("44")).rejects.toMatchObject({ code: "PATH_NOT_ALLOWED" });
+    expect(remote.bundleDownloads).toHaveLength(0);
   });
 
   it("lists sorted regular-file artifacts after ownership and containment checks", async () => {

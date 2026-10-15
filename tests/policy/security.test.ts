@@ -71,6 +71,20 @@ describe("workspace paths", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+  it("allows --force only for an existing regular artifact", () => {
+    const root = mkdtempSync(join(tmpdir(), "slurm-agent-force-"));
+    try {
+      const target = resolveLocalArtifactPath(root, "44", "results/model.bin");
+      writeFileSync(target, "");
+      expect(resolveLocalArtifactPath(root, "44", "results/model.bin", true)).toBe(target);
+      symlinkSync(target, join(root, "44", "results", "model-link.bin"));
+      expect(() => resolveLocalArtifactPath(root, "44", "results/model-link.bin", true)).toThrowError(
+        expect.objectContaining({ code: "LOCAL_PATH_NOT_ALLOWED" }),
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("parallel launcher policy", () => {

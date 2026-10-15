@@ -3,7 +3,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { main } from "../../src/cli.js";
-import type { RemoteExecutor, RemoteResult, SafeCommand, SafeSubmissionUpload } from "../../src/transport/types.js";
+import type {
+  ArtifactDownload, RemoteExecutor, RemoteResult, SafeArtifactBundleTransfer, SafeCommand, SafeSubmissionUpload,
+} from "../../src/transport/types.js";
 
 class Sink {
   value = "";
@@ -32,12 +34,14 @@ class SubmitExecutor implements RemoteExecutor {
     this.uploads.push(upload);
     return { bytes: upload.content.length };
   }
-  async downloadArtifact(): Promise<{ bytes: number }> { return { bytes: 0 }; }
+  async downloadArtifact(): Promise<ArtifactDownload> { return { bytes: 0, sha256: "a".repeat(64), overwritten: false }; }
+  async downloadArtifactBundle(): Promise<ArtifactDownload> { return { bytes: 0, sha256: "b".repeat(64), overwritten: false }; }
   async close(): Promise<void> {}
 }
 
 class QueryExecutor implements RemoteExecutor {
   readonly commands: SafeCommand[] = [];
+  readonly bundleDownloads: SafeArtifactBundleTransfer[] = [];
   constructor(private readonly results: RemoteResult[]) {}
   async run(command: SafeCommand): Promise<RemoteResult> {
     this.commands.push(command);
@@ -46,7 +50,11 @@ class QueryExecutor implements RemoteExecutor {
     return result;
   }
   async uploadSubmission(): Promise<{ bytes: number }> { return { bytes: 0 }; }
-  async downloadArtifact(): Promise<{ bytes: number }> { return { bytes: 0 }; }
+  async downloadArtifact(): Promise<ArtifactDownload> { return { bytes: 0, sha256: "a".repeat(64), overwritten: false }; }
+  async downloadArtifactBundle(transfer: SafeArtifactBundleTransfer): Promise<ArtifactDownload> {
+    this.bundleDownloads.push(transfer);
+    return { bytes: 123, sha256: "b".repeat(64), overwritten: transfer.overwrite === true };
+  }
   async close(): Promise<void> {}
 }
 
@@ -63,6 +71,9 @@ describe("CLI boundary", () => {
     expect(await main(["--help"], {}, stdout)).toBe(0);
     expect(stdout.value).toContain("slurm-agent submit");
     expect(stdout.value).toContain("slurm-agent policy");
+    expect(stdout.value).toContain("slurm-agent artifact JOB_ID --path RELATIVE_PATH [--force]");
+    expect(stdout.value).toContain("slurm-agent artifacts JOB_ID [--download [--prefix RELATIVE_DIRECTORY] [--force]]");
+    expect(stdout.value).not.toContain("slurm-agent artifact-bundle");
   });
   it.each([
     ["submit", "--script", "jobs/a.sh", "--partition", "p", "--export", "ALL"],
@@ -70,7 +81,13 @@ describe("CLI boundary", () => {
     ["list", "--sort", "%i"],
     ["logs", "1", "--path", "/etc/passwd"],
     ["artifact", "1", "--output", "/etc/passwd"],
+    ["artifact", "1"],
     ["artifact", "1", "--path", "../../etc/passwd", "--overwrite", "true"],
+    ["artifacts", "1", "--download=false"],
+    ["artifacts", "1", "--prefix", "VTK"],
+    ["artifacts", "1", "--download", "--prefix="],
+    ["artifacts", "1", "--force"],
+    ["artifact", "1", "--path", "model.bin", "--force=false"],
     ["cluster-info", "--partition", "gpu"],
     ["policy", "--set", "max_nodes=99"],
     ["nodes", "--state", "NOT_A_NODE_STATE"],
@@ -272,7 +289,7 @@ require_apptainer_for_generated_scripts: false
       const env = {
         SLURM_SSH_HOST: "host", SLURM_SSH_USER: "alice", SLURM_SSH_KEY_PATH: join(root, "key"),
         SLURM_SSH_KNOWN_HOSTS: join(root, "known_hosts"), SLURM_REMOTE_WORKSPACE: "/work",
-        SLURM_POLICY_PATH: join(root, "policy.yaml"),
+        SLURM_POLICY_PATH: join(root, "policy.yaml"), SLURM_LOCAL_ARTIFACTS: join(root, "downloads"),
       };
 
       const policyRemote = new QueryExecutor([]);
@@ -479,6 +496,38 @@ require_apptainer_for_generated_scripts: false
         ok: true, job_id: "44", artifacts: [
           { path: "model.bin", bytes: 42 }, { path: "reports/metrics.json", bytes: 9 },
         ],
+      });
+
+      const bundleRemote = new QueryExecutor([
+        { stdout: "44|alice|job|p|COMPLETED|0:01\n", stderr: "", exitCode: 0 },
+        { stdout: "/work\n", stderr: "", exitCode: 0 },
+        { stdout: "/work/.slurm-agent/artifacts/44\n", stderr: "", exitCode: 0 },
+        { stdout: "/work/.slurm-agent/artifacts/44/airfoil_unsteady/VTK\n", stderr: "", exitCode: 0 },
+        { stdout: "", stderr: "", exitCode: 0 },
+        { stdout: "", stderr: "", exitCode: 0 },
+        { stdout: "/work/.slurm-agent/bundles\n", stderr: "", exitCode: 0 },
+      ]);
+      const bundleOutput = new Sink();
+      expect(await main(
+        ["artifacts", "44", "--download", "--prefix", "airfoil_unsteady/VTK", "--force"],
+        env, bundleOutput, new Sink() as never, () => bundleRemote,
+      )).toBe(0);
+      expect(JSON.parse(bundleOutput.value)).toMatchObject({
+        ok: true,
+        bundle: {
+          job_id: "44", format: "tar.gz", prefix: "airfoil_unsteady/VTK", bytes: 123,
+          local_path: expect.stringMatching(/\/44\/artifacts-VTK-[a-f0-9]{8}\.tar\.gz$/),
+          sha256: "b".repeat(64), overwritten: true,
+        },
+      });
+      expect(bundleRemote.bundleDownloads).toHaveLength(1);
+      expect(bundleRemote.bundleDownloads[0]).toMatchObject({
+        remoteDirectory: "/work/.slurm-agent/artifacts/44",
+        remoteArchivePath: expect.stringMatching(/^\/work\/\.slurm-agent\/bundles\/[0-9a-f-]+\.tar\.gz$/),
+        localPath: expect.stringMatching(/\/44\/artifacts-VTK-[a-f0-9]{8}\.tar\.gz$/),
+        maxBytes: 104857600,
+        prefix: "airfoil_unsteady/VTK",
+        overwrite: true,
       });
     } finally {
       rmSync(root, { recursive: true, force: true });

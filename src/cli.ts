@@ -3,7 +3,7 @@ import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { AuditLogger } from "./audit/logger.js";
 import { runArtifact } from "./commands/artifact.js";
-import { runArtifacts } from "./commands/artifacts.js";
+import { runArtifacts, runArtifactsDownload } from "./commands/artifacts.js";
 import { runCancel } from "./commands/cancel.js";
 import { runClusterInfo } from "./commands/cluster-info.js";
 import { runDiagnose } from "./commands/diagnose.js";
@@ -61,8 +61,8 @@ Usage:
   slurm-agent update JOB_ID [--time TIME] [--dependency SPEC] [--array-concurrency N]
   slurm-agent signal JOB_ID --signal NAME [--scope steps|batch|full]
   slurm-agent logs JOB_ID [--stream stdout|stderr] [--tail LINES]
-  slurm-agent artifact JOB_ID --path RELATIVE_PATH
-  slurm-agent artifacts JOB_ID
+  slurm-agent artifact JOB_ID --path RELATIVE_PATH [--force]
+  slurm-agent artifacts JOB_ID [--download [--prefix RELATIVE_DIRECTORY] [--force]]
   slurm-agent wait JOB_ID [--timeout SECONDS] [--poll-interval SECONDS]
 
 Submit options:
@@ -123,9 +123,10 @@ function parseArgs(argv: string[]): Parsed {
     const token = argv[index]!;
     if (positionalMode) { positionals.push(token); continue; }
     if (token === "--") { positionalMode = true; continue; }
-    if (token === "--exclusive") {
-      if (options.has("exclusive")) throw invalid("Option --exclusive may only be specified once.");
-      options.set("exclusive", "true");
+    if (token === "--exclusive" || token === "--download" || token === "--force") {
+      const key = token.slice(2);
+      if (options.has(key)) throw invalid(`Option --${key} may only be specified once.`);
+      options.set(key, "true");
       continue;
     }
     if (shortOptions[token]) {
@@ -222,9 +223,22 @@ function prevalidateShape(parsed: Parsed): void {
     case "release":
     case "requeue":
     case "usage":
-    case "artifacts":
       enforceShape(parsed, [], 1);
       validateJobId(parsed.positionals[0]!);
+      break;
+    case "artifacts":
+      enforceShape(parsed, ["download", "prefix", "force"], 1);
+      validateJobId(parsed.positionals[0]!);
+      if (parsed.options.has("download") && parsed.options.get("download") !== "true") {
+        throw invalid("--download does not take a value.");
+      }
+      if (parsed.options.has("force") && parsed.options.get("force") !== "true") {
+        throw invalid("--force does not take a value.");
+      }
+      if (parsed.options.has("prefix")) requiredOption(parsed.options, "prefix");
+      if ((parsed.options.has("prefix") || parsed.options.has("force")) && !parsed.options.has("download")) {
+        throw invalid("--prefix and --force require --download with artifacts.");
+      }
       break;
     case "update":
       enforceShape(parsed, ["time", "dependency", "array-concurrency"], 1);
@@ -253,9 +267,12 @@ function prevalidateShape(parsed: Parsed): void {
       break;
     }
     case "artifact":
-      enforceShape(parsed, ["path"], 1);
+      enforceShape(parsed, ["path", "force"], 1);
       validateJobId(parsed.positionals[0]!);
       requiredOption(parsed.options, "path");
+      if (parsed.options.has("force") && parsed.options.get("force") !== "true") {
+        throw invalid("--force does not take a value.");
+      }
       break;
     case "wait":
       enforceShape(parsed, ["timeout", "poll-interval"], 1);
@@ -545,14 +562,22 @@ export async function main(
       case "artifact": {
         jobId = validateJobId(parsed.positionals[0]!);
         const path = requiredOption(parsed.options, "path");
-        auditResources = { path };
-        response = await runArtifact(context, jobId, path);
+        const force = parsed.options.has("force");
+        auditResources = { path, force };
+        response = await runArtifact(context, jobId, path, force);
         break;
       }
-      case "artifacts":
+      case "artifacts": {
         jobId = validateJobId(parsed.positionals[0]!);
-        response = await runArtifacts(context, jobId);
+        const download = parsed.options.has("download");
+        const prefix = parsed.options.get("prefix");
+        const force = parsed.options.has("force");
+        auditResources = download ? { mode: "download", prefix, force } : undefined;
+        response = download
+          ? await runArtifactsDownload(context, jobId, { prefix, force })
+          : await runArtifacts(context, jobId);
         break;
+      }
       case "wait": {
         jobId = validateJobId(parsed.positionals[0]!);
         const timeoutSeconds = parsePositiveInteger(

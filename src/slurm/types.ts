@@ -35,6 +35,18 @@ export interface ArtifactResult {
   remote_path: string;
   local_path: string;
   bytes: number;
+  sha256: string;
+  overwritten: boolean;
+}
+
+export interface ArtifactBundleResult {
+  job_id: string;
+  format: "tar.gz";
+  local_path: string;
+  bytes: number;
+  sha256: string;
+  overwritten: boolean;
+  prefix?: string;
 }
 
 export interface ArtifactEntry {

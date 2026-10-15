@@ -1,4 +1,4 @@
-export type RemoteExecutable = "realpath" | "test" | "mkdir" | "find" | "sbatch" | "squeue" | "sacct" | "scancel" | "scontrol" | "sinfo" | "sprio" | "sshare" | "sstat" | "tail";
+export type RemoteExecutable = "realpath" | "test" | "mkdir" | "rm" | "find" | "sha256sum" | "sbatch" | "squeue" | "sacct" | "scancel" | "scontrol" | "sinfo" | "sprio" | "sshare" | "sstat" | "tail";
 
 export interface SafeCommand {
   executable: RemoteExecutable;
@@ -19,6 +19,22 @@ export interface SafeArtifactTransfer {
   remotePath: string;
   localPath: string;
   maxBytes: number;
+  overwrite?: boolean;
+}
+
+export interface SafeArtifactBundleTransfer {
+  remoteDirectory: string;
+  remoteArchivePath: string;
+  localPath: string;
+  maxBytes: number;
+  prefix?: string;
+  overwrite?: boolean;
+}
+
+export interface ArtifactDownload {
+  bytes: number;
+  sha256: string;
+  overwritten: boolean;
 }
 
 export interface SafeSubmissionUpload {
@@ -31,7 +47,8 @@ export interface SafeSubmissionUpload {
 
 export interface RemoteExecutor {
   run(command: SafeCommand): Promise<RemoteResult>;
-  downloadArtifact(transfer: SafeArtifactTransfer): Promise<{ bytes: number }>;
+  downloadArtifact(transfer: SafeArtifactTransfer): Promise<ArtifactDownload>;
+  downloadArtifactBundle(transfer: SafeArtifactBundleTransfer): Promise<ArtifactDownload>;
   uploadSubmission(upload: SafeSubmissionUpload): Promise<{ bytes: number }>;
   close(): Promise<void>;
 }

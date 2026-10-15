@@ -83,14 +83,15 @@ slurm-agent requeue JOB_ID
 slurm-agent update JOB_ID
 slurm-agent signal JOB_ID
 slurm-agent logs JOB_ID
-slurm-agent artifacts JOB_ID
-slurm-agent artifact JOB_ID
+slurm-agent artifacts JOB_ID [--download [--prefix RELATIVE_DIRECTORY] [--force]]
+slurm-agent artifact JOB_ID --path RELATIVE_PATH [--force]
 slurm-agent wait JOB_ID
 ```
 
 已完成的能力包括：
 
 - read-only effective policy inspection；不提供 policy 修改介面。
+- artifact 單檔與整包下載使用 SFTP，遠端／本地 SHA-256 驗證後才安裝；支援明確 `--force` 原子覆寫與受控 `--prefix` 子目錄打包。
 - 受控 script staging 與 `sbatch` 提交。
 - nodes、tasks、CPU、memory、GPU/GRES、walltime 等有界資源請求。
 - account、QOS、constraint、nodelist、exclude、reservation 的 operator-defined aliases。

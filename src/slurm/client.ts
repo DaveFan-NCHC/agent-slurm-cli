@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { posix } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { AgentError, ExitCode } from "../errors/errors.js";
@@ -13,7 +13,7 @@ import {
   parseJobUsage, parseLiveUsage, parseNodeInfo, parsePriorityFactors, parseQueueJobs, parseSubmittedJobId,
 } from "./parser.js";
 import type {
-  ArtifactEntry, ArtifactResult, DiagnosisFinding, FairShareEntry, HistoryJob, HistoryQuery, JobDiagnosis, JobSummary,
+  ArtifactBundleResult, ArtifactEntry, ArtifactResult, DiagnosisFinding, FairShareEntry, HistoryJob, HistoryQuery, JobDiagnosis, JobSummary,
   JobUsage, ListQuery, LogResult, NodeInfo, NodeQuery, OwnedJob, PartitionInfo, PriorityFactors, WaitResult,
 } from "./types.js";
 import { TRUSTED_RUNNER } from "./runner.js";
@@ -643,7 +643,7 @@ export class SlurmClient {
     return { job_id: jobId, stream, content: result.stdout, truncated: result.stdoutTruncated ?? false };
   }
 
-  async artifact(jobId: string, artifactPath: string): Promise<ArtifactResult> {
+  async artifact(jobId: string, artifactPath: string, overwrite = false): Promise<ArtifactResult> {
     if (!this.localArtifactsPath) {
       throw new AgentError("CONFIGURATION_ERROR", "SLURM_LOCAL_ARTIFACTS is required for artifact downloads.", ExitCode.General);
     }
@@ -663,9 +663,86 @@ export class SlurmClient {
     if (!isContained(artifactDirectoryReal, remotePath)) {
       throw new AgentError("PATH_NOT_ALLOWED", "Artifact resolves outside its job directory.", ExitCode.PolicyDenied);
     }
-    const localPath = resolveLocalArtifactPath(this.localArtifactsPath, jobId, safeRelative);
-    const downloaded = await this.executor.downloadArtifact({ remotePath, localPath, maxBytes: this.policy.maxArtifactBytes });
-    return { job_id: jobId, remote_path: remotePath, local_path: localPath, bytes: downloaded.bytes };
+    const localPath = resolveLocalArtifactPath(this.localArtifactsPath, jobId, safeRelative, overwrite);
+    const downloaded = await this.executor.downloadArtifact({
+      remotePath, localPath, maxBytes: this.policy.maxArtifactBytes, overwrite,
+    });
+    return {
+      job_id: jobId,
+      remote_path: remotePath,
+      local_path: localPath,
+      bytes: downloaded.bytes,
+      sha256: downloaded.sha256,
+      overwritten: downloaded.overwritten,
+    };
+  }
+
+  async artifactBundle(
+    jobId: string,
+    { prefix, overwrite = false }: { prefix?: string; overwrite?: boolean } = {},
+  ): Promise<ArtifactBundleResult> {
+    if (!this.localArtifactsPath) {
+      throw new AgentError("CONFIGURATION_ERROR", "SLURM_LOCAL_ARTIFACTS is required for artifact downloads.", ExitCode.General);
+    }
+    await this.getOwnedJob(jobId);
+    const workspaceReal = await this.workspaceRealpath();
+    const artifactDirectory = `${workspaceReal}/.slurm-agent/artifacts/${jobId}`;
+    const artifactDirectoryReal = await this.realpath(artifactDirectory);
+    if (!artifactDirectoryReal) {
+      throw new AgentError("ARTIFACT_NOT_FOUND", `No artifact directory exists for job ${jobId}.`, ExitCode.NotFound);
+    }
+    if (!isContained(workspaceReal, artifactDirectoryReal)) {
+      throw new AgentError("PATH_NOT_ALLOWED", "Artifact directory resolves outside the remote workspace.", ExitCode.PolicyDenied);
+    }
+    let safePrefix: string | undefined;
+    if (prefix !== undefined) {
+      safePrefix = resolveWorkspacePath("/artifact", prefix).slice("/artifact/".length);
+      const requestedPrefix = `${artifactDirectoryReal}/${safePrefix}`;
+      const prefixReal = await this.realpath(requestedPrefix);
+      if (!prefixReal) {
+        throw new AgentError("ARTIFACT_NOT_FOUND", "Artifact prefix directory was not found.", ExitCode.NotFound);
+      }
+      if (!isContained(artifactDirectoryReal, prefixReal) || prefixReal !== requestedPrefix) {
+        throw new AgentError(
+          "PATH_NOT_ALLOWED", "Artifact prefix must be a real directory beneath the job artifact root.", ExitCode.PolicyDenied,
+        );
+      }
+      const directory = await this.run({ executable: "test", args: ["-d", prefixReal] });
+      if (directory.exitCode !== 0) {
+        throw new AgentError("ARTIFACT_NOT_FOUND", "Artifact prefix does not name a directory.", ExitCode.NotFound);
+      }
+    }
+    const bundleDirectory = `${workspaceReal}/.slurm-agent/bundles`;
+    const mkdir = await this.run({ executable: "mkdir", args: ["-p", "--", bundleDirectory] });
+    if (mkdir.exitCode !== 0) {
+      throw new AgentError("ARTIFACT_DOWNLOAD_FAILED", "Unable to create the controlled remote bundle directory.", ExitCode.SshFailure);
+    }
+    const bundleDirectoryReal = await this.realpath(bundleDirectory);
+    if (!bundleDirectoryReal || !isContained(workspaceReal, bundleDirectoryReal)) {
+      throw new AgentError("PATH_NOT_ALLOWED", "Artifact bundle directory resolves outside the remote workspace.", ExitCode.PolicyDenied);
+    }
+    const remoteArchivePath = `${bundleDirectoryReal}/${randomUUID()}.tar.gz`;
+    const localName = safePrefix === undefined
+      ? "artifacts.tar.gz"
+      : `artifacts-${posix.basename(safePrefix)}-${createHash("sha256").update(safePrefix).digest("hex").slice(0, 8)}.tar.gz`;
+    const localPath = resolveLocalArtifactPath(this.localArtifactsPath, jobId, localName, overwrite);
+    const downloaded = await this.executor.downloadArtifactBundle({
+      remoteDirectory: artifactDirectoryReal,
+      remoteArchivePath,
+      localPath,
+      maxBytes: this.policy.maxArtifactBytes,
+      prefix: safePrefix,
+      overwrite,
+    });
+    return {
+      job_id: jobId,
+      format: "tar.gz",
+      local_path: localPath,
+      bytes: downloaded.bytes,
+      sha256: downloaded.sha256,
+      overwritten: downloaded.overwritten,
+      ...(safePrefix === undefined ? {} : { prefix: safePrefix }),
+    };
   }
 
   async artifacts(jobId: string): Promise<ArtifactEntry[]> {

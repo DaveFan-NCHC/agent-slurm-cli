@@ -22,8 +22,8 @@ slurm-agent requeue JOB_ID
 slurm-agent update JOB_ID
 slurm-agent signal JOB_ID --signal NAME
 slurm-agent logs JOB_ID
-slurm-agent artifacts JOB_ID
-slurm-agent artifact JOB_ID --path RELATIVE_PATH
+slurm-agent artifacts JOB_ID [--download [--prefix RELATIVE_DIRECTORY] [--force]]
+slurm-agent artifact JOB_ID --path RELATIVE_PATH [--force]
 slurm-agent wait JOB_ID
 ```
 
@@ -330,6 +330,9 @@ slurm-agent update 12345 --time 02:00:00 --array-concurrency 8
 slurm-agent update 12345 --dependency afterok:12344
 slurm-agent signal 12345 --signal USR1 --scope batch
 slurm-agent artifacts 12345
+slurm-agent artifacts 12345 --download
+slurm-agent artifacts 12345 --download --prefix airfoil_unsteady/VTK
+slurm-agent artifact 12345 --path results/model.bin --force
 ```
 
 `policy` returns the validated effective policy, including loader defaults, as JSON. It is read-only: the CLI does not provide a policy mutation interface. `cluster-info` returns partition-level availability, time limit, node state, CPU counts, and configured GRES only for `allowed_partitions`. `nodes` returns node state, CPU state, total/allocated/free memory, configured/used GRES, available/active features, temporary disk, and unavailable reason fields. `free_mib` is an informational OS report and is not scheduler-available memory. Node queries may be narrowed by an allowed partition, a supported node state, or a policy constraint alias that resolves to one concrete feature.
@@ -371,14 +374,26 @@ The controlled download command is:
 ```bash
 slurm-agent artifacts 12345
 slurm-agent artifact 12345 --path results/model.bin
+slurm-agent artifacts 12345 --download
+slurm-agent artifacts 12345 --download --prefix airfoil_unsteady/VTK
 ```
 
 `artifacts` first verifies ownership and containment, then lists only regular files below the job's artifact directory as `{path, bytes}` records. It does not follow symlinks, cross filesystems, or expose a generic filesystem browser; the count is bounded by `max_artifact_files` and a fixed output-size limit.
 
-`artifact` verifies job ownership and both remote and local path containment, enforces `max_artifact_bytes`, and refuses to overwrite an existing local file. The resulting file is stored at `SLURM_LOCAL_ARTIFACTS/12345/results/model.bin`; callers cannot provide an arbitrary local output path.
+`artifact` verifies job ownership and both remote and local path containment, enforces `max_artifact_bytes`, and refuses to overwrite an existing local file by default. The resulting file is stored at `SLURM_LOCAL_ARTIFACTS/12345/results/model.bin`; callers cannot provide an arbitrary local output path. An explicit `--force` may atomically replace an existing regular file, including a zero-byte failed download, but never a directory, symlink, or special file. The old file remains intact unless the new download completes and passes checksum verification.
+
+With `--download`, `artifacts` creates a capped temporary `tar.gz` under the controlled remote workspace, downloads it through the configured SFTP transfer connection, and removes the remote file in a `finally` cleanup. A separately configured SFTP endpoint is therefore used automatically and must expose the same remote workspace path. The bundle contains all safe regular-file paths and is not constrained by the artifact-list count or 1 MiB metadata limit. Its compressed size is bounded by `max_artifact_bytes`; creation and transfer are individually bounded by the configured command timeout. It does not cross filesystems or follow symlinks.
+
+`--prefix RELATIVE_DIRECTORY` restricts a bundle to one real subdirectory below the owned job's artifact root while preserving that prefix inside the archive. It is valid only with `--download`; traversal, absolute paths, and directories reached through symlinks are rejected. A prefix bundle receives a deterministic collision-resistant local name such as `artifacts-VTK-a1b2c3d4.tar.gz`, reported in `bundle.local_path`. Whole-job bundles continue to use `artifacts.tar.gz`. `--force` has the same verified atomic replacement behavior for either bundle name.
+
+Every single-file and bundle download calculates SHA-256 remotely, calculates it again while receiving bytes over SFTP, and installs the local file only when both values match. A mismatch returns `ARTIFACT_CHECKSUM_MISMATCH`, removes the incomplete local file, and preserves any previous destination.
 
 ```json
-{"ok":true,"artifact":{"job_id":"12345","remote_path":"/home/slurm-agent/workspace/.slurm-agent/artifacts/12345/results/model.bin","local_path":"/var/lib/slurm-agent/artifacts/12345/results/model.bin","bytes":1048576}}
+{"ok":true,"artifact":{"job_id":"12345","remote_path":"/home/slurm-agent/workspace/.slurm-agent/artifacts/12345/results/model.bin","local_path":"/var/lib/slurm-agent/artifacts/12345/results/model.bin","bytes":1048576,"sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","overwritten":false}}
+```
+
+```json
+{"ok":true,"bundle":{"job_id":"12345","format":"tar.gz","prefix":"airfoil_unsteady/VTK","local_path":"/var/lib/slurm-agent/artifacts/12345/artifacts-VTK-a1b2c3d4.tar.gz","bytes":2097152,"sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","overwritten":false}}
 ```
 
 ## Exit codes
@@ -404,7 +419,7 @@ If a remote Slurm command fails, the error object also includes a sanitized `slu
 
 ## Security model and limitations
 
-- Every remote command consists of a compile-time executable allowlist plus separately shell-quoted arguments; no shell fragments are accepted.
+- Remote operations use a compile-time executable allowlist and separately shell-quoted arguments. `artifacts --download` uses one compile-time fixed Bash pipeline to create a capped temporary archive; callers cannot provide shell fragments, archive arguments, or temporary paths.
 - Job IDs, array specifications, dependencies, partition names, script segments, job names, resource units, and times use strict grammars. Unknown flags and duplicate non-repeatable flags are rejected; repeated inputs must resolve to unique destinations.
 - Runtime and scheduler selection accepts only policy-defined logical aliases. Apptainer images must resolve to regular files; virtual environments must contain an executable `bin/python`. Raw runtime paths, account/QOS/constraint/reservation values, image URIs, bind mounts, and caller-provided commands are unavailable.
 - Agent scripts come only from `SLURM_LOCAL_JOB_WORKSPACE`; symlinks, traversal, oversized files, invalid UTF-8, missing shebangs, and embedded `#SBATCH` directives are rejected. The exact bytes are hashed before upload.
@@ -414,9 +429,9 @@ If a remote Slurm command fails, the error object also includes a sanitized `slu
 - The batch environment exports only controlled `SLURM_AGENT_*` values, not the complete SSH process environment.
 - `cancel`, `hold`, `release`, `requeue`, `update`, `signal`, `status`, `diagnose`, `usage`, `wait`, `logs`, `artifacts`, and `artifact` confirm that Slurm reports the configured user as owner. Dependency references receive the same ownership check before submission or update. `list`, `history`, and `fairshare` fix their queries to that user and reject unexpected cross-user rows.
 - Script and log paths are checked with remote `realpath`, preventing traversal and symlink escape.
-- Artifact transfer is an internal, single-file SFTP stream after remote containment checks; it is not an SFTP browser. The destination is derived from trusted configuration and the job ID, and is created without overwrite.
+- Artifact transfer uses the configured SFTP connection for both single files and bundles after remote containment checks; it is not an SFTP browser. Bundle creation, checksum calculation, and cleanup stay on the command connection. Remote and local SHA-256 values must match before an atomic local install. Local destinations are created without overwrite unless the caller explicitly supplies `--force`, which can replace only a regular file after successful verification.
 - Audit records never contain private keys, credentials, command stderr, or environment values.
-- The remote host needs GNU-compatible `realpath`, `test`, `mkdir`, `tail`, and `find`, plus `sbatch`, `squeue`, `sacct`, `scancel`, `scontrol`, `sinfo`, `sprio`, `sshare`, and `sstat` in its non-interactive PATH. `srun` is additionally required at `SLURM_REMOTE_SRUN_PATH` when that launcher is enabled. `sprio` may return no factors on clusters without multifactor priority; this is a supported diagnose degradation.
+- The remote host needs Bash, GNU-compatible `realpath`, `test`, `mkdir`, `rm`, `head`, `wc`, `tail`, `find`, `tar`, and `sha256sum`, plus `sbatch`, `squeue`, `sacct`, `scancel`, `scontrol`, `sinfo`, `sprio`, `sshare`, and `sstat` in its non-interactive PATH. `srun` is additionally required at `SLURM_REMOTE_SRUN_PATH` when that launcher is enabled. `sprio` may return no factors on clusters without multifactor priority; this is a supported diagnose degradation.
 - Cluster-wide enforcement still belongs in Slurm configuration such as account/QOS limits and `job_submit` policy; the CLI policy is an additional capability boundary, not a replacement for scheduler controls.
 - Completed-job lookup depends on Slurm accounting (`sacct`) retention and permissions. If no allocation record is visible, the CLI reports `JOB_NOT_FOUND`.
 - Live resource metrics depend on Slurm's `jobacct_gather` support. If `sstat` is unavailable for a running job, `usage` returns accounting data with `live_available: false`.

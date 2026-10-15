@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { posix } from "node:path";
 import { AgentError, ExitCode, policyDenied } from "../errors/errors.js";
@@ -20,7 +20,12 @@ export function isContained(workspaceRealPath: string, targetRealPath: string): 
   return targetRealPath === workspaceRealPath || targetRealPath.startsWith(`${workspaceRealPath}/`);
 }
 
-export function resolveLocalArtifactPath(basePath: string, jobId: string, artifactPath: string): string {
+export function resolveLocalArtifactPath(
+  basePath: string,
+  jobId: string,
+  artifactPath: string,
+  overwrite = false,
+): string {
   if (!isAbsolute(basePath)) {
     throw new AgentError("LOCAL_PATH_NOT_ALLOWED", "SLURM_LOCAL_ARTIFACTS must be an absolute path.", ExitCode.General);
   }
@@ -37,7 +42,16 @@ export function resolveLocalArtifactPath(basePath: string, jobId: string, artifa
     }
     const finalPath = resolve(parentReal, target.slice(parent.length + 1));
     if (existsSync(finalPath)) {
-      throw new AgentError("ARTIFACT_ALREADY_EXISTS", "The local artifact already exists; overwriting is not permitted.", ExitCode.General);
+      if (!overwrite) {
+        throw new AgentError("ARTIFACT_ALREADY_EXISTS", "The local artifact already exists; overwriting is not permitted.", ExitCode.General);
+      }
+      if (!lstatSync(finalPath).isFile()) {
+        throw new AgentError(
+          "LOCAL_PATH_NOT_ALLOWED",
+          "--force may replace only an existing regular file.",
+          ExitCode.PolicyDenied,
+        );
+      }
     }
     return finalPath;
   } catch (cause) {

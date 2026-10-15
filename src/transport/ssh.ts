@@ -1,12 +1,38 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { once } from "node:events";
-import { createWriteStream, linkSync, readFileSync, unlinkSync } from "node:fs";
+import { createWriteStream, linkSync, lstatSync, readFileSync, renameSync, unlinkSync } from "node:fs";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { Client, type ConnectConfig, type ClientChannel, type SFTPWrapper } from "ssh2";
 import type { SshConfig, SshConnectionConfig } from "../config/loader.js";
 import { AgentError, ExitCode } from "../errors/errors.js";
-import { renderCommand, type RemoteExecutor, type RemoteResult, type SafeArtifactTransfer, type SafeCommand, type SafeSubmissionUpload } from "./types.js";
+import {
+  renderCommand, shellEscape, type ArtifactDownload, type RemoteExecutor, type RemoteResult,
+  type SafeArtifactBundleTransfer, type SafeArtifactTransfer, type SafeCommand, type SafeSubmissionUpload,
+} from "./types.js";
+
+const ARTIFACT_BUNDLE_SCRIPT = String.raw`set -uo pipefail; set -C; umask 077; cd -- "$1" || exit 74; if [ -n "$5" ]; then start="./$5"; [ -d "$start" ] && [ ! -L "$start" ] || exit 75; else start=.; fi; { if [ -n "$5" ]; then find . -xdev -regextype posix-extended -type f -path "./$5/*" -regex './[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*' -printf '%P\0'; else find . -xdev -regextype posix-extended -type f -regex './[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*' -printf '%P\0'; fi; } | tar --create --gzip --file=- --null --verbatim-files-from --no-recursion --files-from=- | head --bytes="$4" > "$2"; bundle_status=$?; bundle_bytes=$(wc -c < "$2") || exit 74; if [ "$bundle_bytes" -gt "$3" ]; then exit 73; fi; exit "$bundle_status"`;
+
+const SAFE_BUNDLE_PREFIX = /^[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*$/;
+
+export function renderArtifactBundleCommand(
+  remoteDirectory: string,
+  remoteArchivePath: string,
+  maxBytes: number,
+  prefix?: string,
+): string {
+  if (prefix !== undefined && (
+    !SAFE_BUNDLE_PREFIX.test(prefix) || prefix.split("/").some((segment) => segment === "." || segment === "..")
+  )) {
+    throw new Error("Artifact bundle prefix is not a safe relative path.");
+  }
+  return [
+    shellEscape("/bin/bash"), shellEscape("-c"), shellEscape(ARTIFACT_BUNDLE_SCRIPT),
+    shellEscape("slurm-agent-artifacts-download"), shellEscape(remoteDirectory), shellEscape(remoteArchivePath),
+    shellEscape(String(maxBytes)), shellEscape(String(Math.min(Number.MAX_SAFE_INTEGER, maxBytes + 1))),
+    shellEscape(prefix ?? ""),
+  ].join(" ");
+}
 
 interface KnownHostEntry { hosts: string[]; key: Buffer }
 
@@ -194,10 +220,8 @@ export class SshExecutor implements RemoteExecutor {
       : this.connectForCommands();
   }
 
-  async run(command: SafeCommand): Promise<RemoteResult> {
+  private async runRendered(rendered: string, limit: number): Promise<RemoteResult> {
     const client = await this.connectForCommands();
-    const rendered = renderCommand(command);
-    const limit = command.maxOutputBytes ?? 4 * 1024 * 1024;
     return await new Promise<RemoteResult>((resolve, reject) => {
       let settled = false;
       const timeout = setTimeout(() => {
@@ -244,7 +268,28 @@ export class SshExecutor implements RemoteExecutor {
     });
   }
 
-  async downloadArtifact({ remotePath, localPath, maxBytes }: SafeArtifactTransfer): Promise<{ bytes: number }> {
+  async run(command: SafeCommand): Promise<RemoteResult> {
+    return await this.runRendered(renderCommand(command), command.maxOutputBytes ?? 4 * 1024 * 1024);
+  }
+
+  private async remoteSha256(remotePath: string): Promise<string> {
+    const result = await this.run({ executable: "sha256sum", args: ["--", remotePath], maxOutputBytes: 256 });
+    const match = /^([a-f0-9]{64})(?:\s|$)/i.exec(result.stdout);
+    if (result.exitCode !== 0 || result.stdoutTruncated === true || !match) {
+      throw new AgentError(
+        "ARTIFACT_DOWNLOAD_FAILED",
+        "Unable to calculate the remote artifact SHA-256 checksum.",
+        ExitCode.SshFailure,
+        { remote_exit_code: result.exitCode, stderr_truncated: result.stderrTruncated === true },
+      );
+    }
+    return match[1]!.toLowerCase();
+  }
+
+  private async downloadVerifiedArtifact(
+    { remotePath, localPath, maxBytes, overwrite = false }: SafeArtifactTransfer,
+    expectedSha256: string,
+  ): Promise<ArtifactDownload> {
     const client = await this.connectForTransfer();
     const sftp = await new Promise<SFTPWrapper>((resolve, reject) => {
       client.sftp((error, session) => {
@@ -265,11 +310,15 @@ export class SshExecutor implements RemoteExecutor {
         throw new AgentError("ARTIFACT_TOO_LARGE", `Artifact exceeds policy maximum ${maxBytes} bytes.`, ExitCode.PolicyDenied);
       }
       let bytes = 0;
+      const hash = createHash("sha256");
       const limiter = new Transform({
         transform(chunk: Buffer, _encoding, callback) {
           bytes += chunk.length;
           if (bytes > maxBytes) callback(new AgentError("ARTIFACT_TOO_LARGE", `Artifact exceeds policy maximum ${maxBytes} bytes.`, ExitCode.PolicyDenied));
-          else callback(null, chunk);
+          else {
+            hash.update(chunk);
+            callback(null, chunk);
+          }
         },
       });
       const output = createWriteStream(temporaryPath, { flags: "wx", mode: 0o600 });
@@ -287,17 +336,41 @@ export class SshExecutor implements RemoteExecutor {
       } finally {
         clearTimeout(transferTimeout);
       }
-      try {
-        linkSync(temporaryPath, localPath);
-      } catch (cause) {
-        if ((cause as NodeJS.ErrnoException).code === "EEXIST") {
-          throw new AgentError("ARTIFACT_ALREADY_EXISTS", "The local artifact already exists; overwriting is not permitted.", ExitCode.General);
-        }
-        throw cause;
+      const sha256 = hash.digest("hex");
+      if (!constantEqual(Buffer.from(sha256, "hex"), Buffer.from(expectedSha256, "hex"))) {
+        throw new AgentError(
+          "ARTIFACT_CHECKSUM_MISMATCH",
+          "Downloaded artifact SHA-256 does not match the remote checksum.",
+          ExitCode.SshFailure,
+        );
       }
-      try { unlinkSync(temporaryPath); } catch { /* destination is already installed atomically */ }
+      let overwritten = false;
+      if (overwrite) {
+        try {
+          const existing = lstatSync(localPath);
+          if (!existing.isFile()) {
+            throw new AgentError(
+              "LOCAL_PATH_NOT_ALLOWED", "--force may replace only an existing regular file.", ExitCode.PolicyDenied,
+            );
+          }
+          overwritten = true;
+        } catch (cause) {
+          if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause;
+        }
+        renameSync(temporaryPath, localPath);
+      } else {
+        try {
+          linkSync(temporaryPath, localPath);
+        } catch (cause) {
+          if ((cause as NodeJS.ErrnoException).code === "EEXIST") {
+            throw new AgentError("ARTIFACT_ALREADY_EXISTS", "The local artifact already exists; overwriting is not permitted.", ExitCode.General);
+          }
+          throw cause;
+        }
+        try { unlinkSync(temporaryPath); } catch { /* destination is already installed atomically */ }
+      }
       temporaryCreated = false;
-      return { bytes };
+      return { bytes, sha256, overwritten };
     } catch (cause) {
       if (temporaryCreated) {
         try { unlinkSync(temporaryPath); } catch { /* best-effort temporary cleanup */ }
@@ -306,6 +379,42 @@ export class SshExecutor implements RemoteExecutor {
       throw new AgentError("ARTIFACT_DOWNLOAD_FAILED", `Artifact download failed: ${(cause as Error).message}`, ExitCode.SshFailure);
     } finally {
       sftp.end();
+    }
+  }
+
+  async downloadArtifact(transfer: SafeArtifactTransfer): Promise<ArtifactDownload> {
+    const expectedSha256 = await this.remoteSha256(transfer.remotePath);
+    return await this.downloadVerifiedArtifact(transfer, expectedSha256);
+  }
+
+  async downloadArtifactBundle(
+    { remoteDirectory, remoteArchivePath, localPath, maxBytes, prefix, overwrite }: SafeArtifactBundleTransfer,
+  ): Promise<ArtifactDownload> {
+    try {
+      const created = await this.runRendered(
+        renderArtifactBundleCommand(remoteDirectory, remoteArchivePath, maxBytes, prefix),
+        4096,
+      );
+      if (created.exitCode === 73) {
+        throw new AgentError(
+          "ARTIFACT_TOO_LARGE", `Artifact bundle exceeds policy maximum ${maxBytes} bytes.`, ExitCode.PolicyDenied,
+        );
+      }
+      if (created.exitCode !== 0) {
+        throw new AgentError(
+          "ARTIFACT_DOWNLOAD_FAILED",
+          "Remote artifact bundle creation failed.",
+          ExitCode.SshFailure,
+          {
+            remote_exit_code: created.exitCode,
+            remote_signal: created.signal,
+            stderr_truncated: created.stderrTruncated === true,
+          },
+        );
+      }
+      return await this.downloadArtifact({ remotePath: remoteArchivePath, localPath, maxBytes, overwrite });
+    } finally {
+      await this.run({ executable: "rm", args: ["-f", "--", remoteArchivePath] }).catch(() => undefined);
     }
   }
 

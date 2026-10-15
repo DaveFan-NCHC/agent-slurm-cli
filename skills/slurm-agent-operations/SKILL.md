@@ -218,9 +218,11 @@ Download one artifact with a safe path relative to that job directory:
 ```bash
 slurm-agent artifacts 12345
 slurm-agent artifact 12345 --path results/model.bin
+slurm-agent artifacts 12345 --download
+slurm-agent artifacts 12345 --download --prefix airfoil_unsteady/VTK
 ```
 
-Use `artifacts` to discover downloadable regular files for that explicit owned job. It returns only safe relative paths and byte sizes, bounded by policy; it does not list symlinks or arbitrary remote directories. Use a returned path with `artifact` when the user requests the download.
+Use `artifacts` to discover downloadable regular files for that explicit owned job. It returns only safe relative paths and byte sizes, bounded by policy; it does not list symlinks or arbitrary remote directories. Use `artifact --path` when the user requests one file, `artifacts --download` when the user requests all artifacts as a `tar.gz`, or add `--prefix RELATIVE_DIRECTORY` to bundle one real contained subdirectory.
 
 On success, read `artifact.local_path` from stdout JSON. The destination is derived as:
 
@@ -228,9 +230,9 @@ On success, read `artifact.local_path` from stdout JSON. The destination is deri
 SLURM_LOCAL_ARTIFACTS/<job-id>/<relative-artifact-path>
 ```
 
-Do not add an output-path or overwrite flag. The CLI verifies job ownership, remote and local containment, regular-file type, transfer timeout, and `max_artifact_bytes`. It refuses to overwrite an existing local file. If the destination exists, do not delete it automatically; report the path and ask the user whether they want to move or remove it.
+Do not add an output-path flag. The CLI verifies job ownership, remote and local containment, regular-file type, transfer timeout, `max_artifact_bytes`, and remote/local SHA-256 agreement. It refuses to overwrite an existing local file by default. Use `--force` only when the user explicitly requests replacement or retry of that destination; it atomically replaces only an existing regular file after the new download passes checksum verification. It never replaces a directory, symlink, or special file.
 
-This is a controlled per-job listing plus single-file transfer, not a general filesystem browser. To retrieve multiple files, download each explicit safe relative path separately.
+`artifacts --download` creates a size-capped temporary archive in the controlled remote workspace, transfers it through the configured SFTP connection, removes the remote temporary file in a `finally` cleanup, and writes a CLI-derived name below `SLURM_LOCAL_ARTIFACTS/<job-id>`. A whole-job bundle uses `artifacts.tar.gz`; a prefix bundle uses a collision-resistant name reported in `bundle.local_path` and preserves the prefix inside the archive. A dedicated SFTP endpoint is used when configured and must expose the same remote workspace path. The command packages only safe regular-file paths, does not cross filesystems or follow symlinks, and applies checksum, `max_artifact_bytes`, timeout, containment, and explicit-overwrite controls. Neither download mode is a general filesystem browser.
 
 ## JSON and failures
 
@@ -247,4 +249,4 @@ Success has `ok: true`; failure has `ok: false` and an `error.code` plus `error.
 7 ownership denied
 ```
 
-For `JOB_NOT_OWNED_BY_USER`, `PATH_NOT_ALLOWED`, `PARTITION_NOT_ALLOWED`, `RUNTIME_ALIAS_NOT_ALLOWED`, `GRES_ALIAS_NOT_ALLOWED`, `RESOURCE_LIMIT_EXCEEDED`, `TIME_LIMIT_EXCEEDED`, `SIGNAL_NOT_ALLOWED`, `ARTIFACT_TOO_LARGE`, or `ARTIFACT_LIST_TOO_LARGE`, stop rather than attempting a workaround. For `ARTIFACT_ALREADY_EXISTS`, preserve the existing file. For transient query failures, a bounded retry is reasonable; do not blindly retry state-changing commands.
+For `JOB_NOT_OWNED_BY_USER`, `PATH_NOT_ALLOWED`, `PARTITION_NOT_ALLOWED`, `RUNTIME_ALIAS_NOT_ALLOWED`, `GRES_ALIAS_NOT_ALLOWED`, `RESOURCE_LIMIT_EXCEEDED`, `TIME_LIMIT_EXCEEDED`, `SIGNAL_NOT_ALLOWED`, `ARTIFACT_TOO_LARGE`, `ARTIFACT_LIST_TOO_LARGE`, or `ARTIFACT_CHECKSUM_MISMATCH`, stop rather than attempting a workaround. For `ARTIFACT_ALREADY_EXISTS`, preserve the existing file unless the user explicitly directs a retry with `--force`. For transient query failures, a bounded retry is reasonable; do not blindly retry state-changing commands.
