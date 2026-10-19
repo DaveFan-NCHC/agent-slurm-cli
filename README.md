@@ -8,6 +8,7 @@ The public interface contains only these Slurm lifecycle operations:
 slurm-agent submit
 slurm-agent policy
 slurm-agent cluster-info
+slurm-agent modules
 slurm-agent nodes
 slurm-agent list
 slurm-agent history
@@ -65,6 +66,7 @@ export SLURM_LOCAL_JOB_WORKSPACE=/var/lib/slurm-agent/jobs
 export SLURM_LOCAL_ARTIFACTS=/var/lib/slurm-agent/artifacts
 export SLURM_REMOTE_APPTAINER_PATH=/usr/bin/apptainer
 export SLURM_REMOTE_SRUN_PATH=/usr/bin/srun
+export SLURM_REMOTE_MODULECMD_PATH=/usr/bin/modulecmd
 export SLURM_POLICY_PATH=/etc/slurm-agent/policy.yaml
 export SLURM_AUDIT_LOG=/var/log/slurm-agent/audit.jsonl
 ```
@@ -131,6 +133,9 @@ allowed_apptainer_images:
   pytorch: /opt/apptainer/pytorch.sif
 allowed_virtualenvs:
   project-a: /home/agent/venvs/project-a
+allowed_modules:
+  gcc: gcc/12.2.0
+  cuda: cuda/12.1
 max_gpus: 4
 max_ntasks_per_node: 8
 max_gpus_per_node: 4
@@ -175,7 +180,7 @@ require_apptainer_for_generated_scripts: true
 
 Input bundles, arrays, dependencies, `srun`, MPI modes, rank placement, per-node/per-task GPUs, exclusive nodes, and signals are opt-in for upgrades. Input limits default to zero, advanced launcher allowlists default to empty, and `allowed_launchers` defaults to `[single]`, preserving one payload execution per job. Set bounded values explicitly to enable only the capabilities wanted by the operator.
 
-Aliases are accepted from the CLI; raw image, virtualenv, GRES, account, QOS, constraint, included/excluded node-list, and reservation values are not. `max_gpus: 0` disables direct `--gpus` requests. Omitting one of the scheduler alias mappings disables that submit option.
+Aliases are accepted from the CLI; raw image, virtualenv, module, GRES, account, QOS, constraint, included/excluded node-list, and reservation values are not. `max_gpus: 0` disables direct `--gpus` requests. Omitting one of the scheduler alias mappings disables that submit option.
 
 ### Cluster path visibility
 
@@ -188,6 +193,7 @@ Aliases are accepted from the CLI; raw image, virtualenv, GRES, account, QOS, co
 | `allowed_virtualenvs.*` | Must resolve to the same environment at the same absolute path on the login node and every eligible compute node | The login node validates `bin/python`, while the compute node runs the environment. A shared filesystem is recommended; an identical installation on every node also works. |
 | `SLURM_REMOTE_APPTAINER_PATH` | Must be executable at the same absolute path on the login node and every eligible compute node | It may be installed locally on each node and does not itself need to be on shared storage. |
 | `SLURM_REMOTE_SRUN_PATH` | Must be executable at the same absolute path on the login node and every eligible compute node when `srun` is enabled | The trusted runner invokes this operator-configured executable; callers cannot choose its path or flags. |
+| `SLURM_REMOTE_MODULECMD_PATH` | Must be executable at the same absolute path on the login node and every eligible compute node when modules are selected | The trusted runner evaluates environment changes emitted by this operator-controlled Environment Modules/Lmod executable. Modulefiles reachable through approved aliases are part of the trusted cluster configuration. |
 
 Typical shared filesystems include NFS, Lustre, GPFS, and BeeGFS. A directory local only to the login node, such as its private `/tmp`, is not suitable for `SLURM_REMOTE_WORKSPACE` or a non-replicated runtime alias. The CLI can validate remote paths only on the login node before submission, so a missing compute-node mount may not be detected until the job starts.
 
@@ -235,6 +241,15 @@ Choose at most one runtime alias per submission:
 slurm-agent submit -p slurm-test --apptainer-image pytorch jobs/train.sh
 slurm-agent submit -p slurm-test --venv project-a jobs/train.sh
 ```
+
+List operator-approved environment modules and select one or more aliases in load order:
+
+```bash
+slurm-agent modules
+slurm-agent submit -p slurm-test --module gcc --module cuda jobs/build.sh
+```
+
+`modules` reports only `allowed_modules` aliases, not the cluster's unrestricted module tree. `--module` is repeatable, rejects unknown or duplicate aliases, and is supported for host and virtualenv jobs. It cannot be combined with `--apptainer-image`; put required software inside the approved image instead. At job start the trusted runner invokes the configured `modulecmd` and applies its emitted environment changes before executing the payload.
 
 MPI jobs can bound rank placement and memory per allocated CPU. `--mem` and `--mem-per-cpu` are mutually exclusive; the latter is checked against `max_memory_gb` using `ntasks × cpus-per-task`:
 

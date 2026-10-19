@@ -70,6 +70,20 @@ case "\${SLURM_AGENT_LAUNCHER}:\${task_mode}" in
     ;;
 esac
 
+if [ -n "\${SLURM_AGENT_MODULES:-}" ]; then
+  : "\${SLURM_AGENT_MODULECMD:?}"
+  load_module_commands() {
+    saved_ifs="\${IFS}"
+    IFS=:
+    set -- \${SLURM_AGENT_MODULES}
+    IFS="\${saved_ifs}"
+    "\${SLURM_AGENT_MODULECMD}" sh load "$@"
+  }
+  module_commands="$(load_module_commands)" || exit $?
+  eval "\${module_commands}"
+  unset module_commands
+fi
+
 case "\${SLURM_AGENT_RUNTIME_KIND}" in
   apptainer)
     : "\${SLURM_AGENT_APPTAINER_EXECUTABLE:?}"
@@ -93,7 +107,11 @@ case "\${SLURM_AGENT_RUNTIME_KIND}" in
   venv)
     : "\${SLURM_AGENT_VENV:?}"
     export VIRTUAL_ENV="\${SLURM_AGENT_VENV}"
-    export PATH="\${SLURM_AGENT_VENV}/bin:/usr/bin:/bin"
+    if [ -n "\${SLURM_AGENT_MODULES:-}" ]; then
+      export PATH="\${SLURM_AGENT_VENV}/bin:\${PATH:-/usr/bin:/bin}"
+    else
+      export PATH="\${SLURM_AGENT_VENV}/bin:/usr/bin:/bin"
+    fi
     export SLURM_AGENT_ARTIFACT_DIR="\${job_artifact_dir}"
     unset SLURM_AGENT_ARTIFACT_ROOT
     exec "\${SLURM_AGENT_PAYLOAD}" "$@"

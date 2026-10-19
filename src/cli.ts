@@ -12,6 +12,7 @@ import { runHistory } from "./commands/history.js";
 import { runHold } from "./commands/hold.js";
 import { runList } from "./commands/list.js";
 import { runLogs } from "./commands/logs.js";
+import { runModules } from "./commands/modules.js";
 import { runNodes } from "./commands/nodes.js";
 import { runPolicy } from "./commands/policy.js";
 import { runRelease } from "./commands/release.js";
@@ -44,6 +45,7 @@ Usage:
   slurm-agent submit [options] SCRIPT [SCRIPT_ARGS...]
   slurm-agent policy
   slurm-agent cluster-info
+  slurm-agent modules
   slurm-agent nodes [--partition NAME] [--state STATE] [--feature ALIAS]
   slurm-agent list [--state STATES] [--partition NAME] [--name NAME] [--account ALIAS]
                    [--limit N] [--sort SORT] [--array-view expanded|summary]
@@ -90,6 +92,7 @@ Submit options:
   -J, --job-name NAME
   --apptainer-image ALIAS
   --venv ALIAS
+  --module ALIAS         repeatable policy-defined environment module
   --input PATH          repeatable workspace-relative staged input
   --launcher single|srun
   --mpi MODE            policy-approved srun MPI mode
@@ -147,7 +150,7 @@ function parseArgs(argv: string[]): Parsed {
     const key = rawKey === "memory" ? "mem" : rawKey;
     const value = equals >= 0 ? token.slice(equals + 1) : argv[++index];
     if (!key || value === undefined || (equals < 0 && value.startsWith("--"))) throw invalid(`Option --${key} requires a value.`);
-    if (key === "input") {
+    if (key === "input" || key === "module") {
       repeatedOptions.set(key, [...(repeatedOptions.get(key) ?? []), value]);
       continue;
     }
@@ -161,12 +164,12 @@ const submitOptions = [
   "partition", "nodes", "ntasks", "ntasks-per-node", "cpus-per-task", "mem", "mem-per-cpu",
   "gpus", "gpus-per-node", "gpus-per-task", "gres", "exclusive", "array", "dependency",
   "account", "qos", "constraint", "nodelist", "exclude", "reservation", "time", "job-name", "apptainer-image", "venv",
-  "launcher", "mpi", "distribution",
+  "module", "launcher", "mpi", "distribution",
 ];
 
 function enforceSubmitShape(parsed: Parsed): void {
   const unknown = [...parsed.options.keys()].filter((key) => !submitOptions.includes(key));
-  const unknownRepeated = [...parsed.repeatedOptions.keys()].filter((key) => key !== "input");
+  const unknownRepeated = [...parsed.repeatedOptions.keys()].filter((key) => key !== "input" && key !== "module");
   if (unknown.length || unknownRepeated.length) {
     throw invalid(`Unknown option(s): ${[...unknown, ...unknownRepeated].map((key) => `--${key}`).join(", ")}.`);
   }
@@ -192,6 +195,7 @@ function prevalidateShape(parsed: Parsed): void {
       break;
     case "policy":
     case "cluster-info":
+    case "modules":
     case "fairshare":
       enforceShape(parsed, [], 0);
       break;
@@ -320,6 +324,7 @@ function parseSubmit(parsed: Parsed, policy: ReturnType<typeof loadPolicy>): Ret
     jobName: parsed.options.get("job-name"),
     apptainerImage: parsed.options.get("apptainer-image"),
     venv: parsed.options.get("venv"),
+    modules: parsed.repeatedOptions.get("module"),
     launcher: parsed.options.get("launcher"),
     mpi: parsed.options.get("mpi"),
     distribution: parsed.options.get("distribution"),
@@ -413,7 +418,7 @@ export async function main(
   try {
     const parsed = parseArgs(argv);
     action = parsed.command;
-    if (!["submit", "policy", "cluster-info", "nodes", "list", "history", "fairshare", "status", "diagnose", "usage", "cancel", "hold", "release", "requeue", "update", "signal", "logs", "artifact", "artifacts", "wait"].includes(parsed.command)) {
+    if (!["submit", "policy", "cluster-info", "modules", "nodes", "list", "history", "fairshare", "status", "diagnose", "usage", "cancel", "hold", "release", "requeue", "update", "signal", "logs", "artifact", "artifacts", "wait"].includes(parsed.command)) {
       throw invalid(`Unknown command: ${parsed.command}.`);
     }
     prevalidateShape(parsed);
@@ -424,13 +429,16 @@ export async function main(
     executor = executorFactory(config.ssh);
     const client = new SlurmClient(
       executor, config.ssh.user, config.ssh.workspace, policy,
-      config.localArtifactsPath, config.remoteApptainerPath, config.remoteSrunPath,
+      config.localArtifactsPath, config.remoteApptainerPath, config.remoteSrunPath, config.remoteModulecmdPath,
     );
     const context = { client, audit, sshUser: config.ssh.user };
     let response: Record<string, unknown>;
     switch (parsed.command) {
       case "policy":
         response = runPolicy(context, policy);
+        break;
+      case "modules":
+        response = runModules(context, policy);
         break;
       case "list": {
         const query = parseListQuery(parsed, policy);
@@ -542,6 +550,7 @@ export async function main(
           reservation: parsed.options.get("reservation"),
           array: parsed.options.get("array"), dependency: parsed.options.get("dependency"),
           apptainer_image: parsed.options.get("apptainer-image"), venv: parsed.options.get("venv"),
+          modules: parsed.repeatedOptions.get("module"),
           launcher: parsed.options.get("launcher") ?? "single",
           mpi: parsed.options.get("mpi"), distribution: parsed.options.get("distribution"),
         };

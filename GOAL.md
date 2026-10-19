@@ -2,7 +2,7 @@
 
 > 目前基準版本：`0.9.2`
 >
-> 文件更新日期：2026-10-08
+> 文件更新日期：2026-10-19
 >
 > 專案狀態：下一階段五項 Priority 均已實作並通過本地測試；尚待部署 cluster 驗證。
 
@@ -69,6 +69,7 @@ interactive remote terminal
 slurm-agent submit
 slurm-agent policy
 slurm-agent cluster-info
+slurm-agent modules
 slurm-agent nodes
 slurm-agent list
 slurm-agent history
@@ -98,6 +99,7 @@ slurm-agent wait JOB_ID
 - job arrays、array concurrency 與受限 dependency types。
 - submission-scoped input bundle，以及 backward-compatible `single` / policy-approved `srun` launcher。
 - Apptainer、virtualenv 或 policy 允許的 host runtime。
+- operator-approved Environment Modules/Lmod module catalog 與 ordered module selection。
 - active queue、completed accounting history、單一 job status。
 - bounded queue/history filters、job scheduling diagnosis，以及 node memory/GRES/feature availability。
 - accounting/live resource usage、CPU/memory efficiency 與 fair-share 查詢。
@@ -124,6 +126,7 @@ dependency
 time
 job-name
 apptainer-image / venv
+repeatable module alias
 input files
 launcher / mpi / distribution
 script arguments
@@ -186,7 +189,7 @@ logs、inputs 與 artifacts 只能位於 CLI 管理的 submission/job-specific d
 
 ### 4.3 Workspace visibility
 
-`SLURM_REMOTE_WORKSPACE` 必須由 login node 與 eligible compute nodes 以相同絕對路徑看見。Policy 中的 Apptainer image 與 virtualenv 也必須在相關節點提供相同內容。
+`SLURM_REMOTE_WORKSPACE` 必須由 login node 與 eligible compute nodes 以相同絕對路徑看見。Policy 中的 Apptainer image 與 virtualenv 也必須在相關節點提供相同內容。啟用 modules 時，operator-controlled `modulecmd` 與其 modulefiles 也必須在 compute nodes 可用。
 
 以下只屬於執行 CLI 的機器，不需分享給 Slurm nodes：
 

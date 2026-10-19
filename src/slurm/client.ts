@@ -74,6 +74,7 @@ export class SlurmClient {
     private readonly localArtifactsPath?: string,
     private readonly remoteApptainerPath = "/usr/bin/apptainer",
     private readonly remoteSrunPath = "/usr/bin/srun",
+    private readonly remoteModulecmdPath = "/usr/bin/modulecmd",
   ) {}
 
   private async run(command: SafeCommand): Promise<RemoteResult> { return this.executor.run(command); }
@@ -409,6 +410,9 @@ export class SlurmClient {
     const srunExecutableReal = launcher === "srun"
       ? await this.realpath(this.remoteSrunPath)
       : undefined;
+    const modulecmdExecutableReal = options.moduleValues?.length
+      ? await this.realpath(this.remoteModulecmdPath)
+      : undefined;
     if (apptainerImageReal && !apptainerExecutableReal) {
       throw new AgentError("RUNTIME_NOT_FOUND", "Configured Apptainer executable does not exist.", ExitCode.General);
     }
@@ -427,6 +431,16 @@ export class SlurmClient {
       const executable = await this.run({ executable: "test", args: ["-x", srunExecutableReal] });
       if (executable.exitCode !== 0) {
         throw new AgentError("RUNTIME_NOT_FOUND", "Configured srun executable is not executable.", ExitCode.General);
+      }
+    }
+    if (options.moduleValues?.length && !modulecmdExecutableReal) {
+      throw new AgentError("RUNTIME_NOT_FOUND", "Configured modulecmd executable does not exist.", ExitCode.General);
+    }
+    if (modulecmdExecutableReal) {
+      validateExportPath(modulecmdExecutableReal, "modulecmd executable");
+      const executable = await this.run({ executable: "test", args: ["-x", modulecmdExecutableReal] });
+      if (executable.exitCode !== 0) {
+        throw new AgentError("RUNTIME_NOT_FOUND", "Configured modulecmd executable is not executable.", ExitCode.General);
       }
     }
     const logDirectory = `${workspaceReal}/.slurm-agent/logs`;
@@ -506,6 +520,10 @@ export class SlurmClient {
       exportedEnvironment.push(`SLURM_AGENT_DISTRIBUTION=${options.distribution}`);
     }
     if (srunExecutableReal) exportedEnvironment.push(`SLURM_AGENT_SRUN_EXECUTABLE=${srunExecutableReal}`);
+    if (modulecmdExecutableReal && options.moduleValues?.length) {
+      exportedEnvironment.push(`SLURM_AGENT_MODULECMD=${modulecmdExecutableReal}`);
+      exportedEnvironment.push(`SLURM_AGENT_MODULES=${options.moduleValues.join(":")}`);
+    }
     const runtimeKind = apptainerImageReal ? "apptainer" : venvReal ? "venv" : "host";
     exportedEnvironment.push(`SLURM_AGENT_RUNTIME_KIND=${runtimeKind}`);
     if (apptainerImageReal) exportedEnvironment.push(`SLURM_AGENT_APPTAINER_IMAGE=${apptainerImageReal}`);

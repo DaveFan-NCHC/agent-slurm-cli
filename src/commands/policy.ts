@@ -35,6 +35,7 @@ function effectivePolicy(policy: Policy): Record<string, unknown> {
     allowed_signals: policy.allowedSignals,
     allowed_apptainer_images: policy.allowedApptainerImages,
     allowed_virtualenvs: policy.allowedVirtualenvs,
+    allowed_modules: policy.allowedModules,
     allowed_gres: policy.allowedGres,
     allowed_accounts: policy.allowedAccounts,
     allowed_qos: policy.allowedQos,

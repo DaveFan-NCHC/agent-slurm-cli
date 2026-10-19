@@ -20,6 +20,7 @@ const policy: Policy = {
   maxArtifactBytes: 4096, maxArtifactFiles: 100, allowedSignals: ["TERM", "USR1"],
   allowedApptainerImages: { pytorch: "/opt/apptainer/pytorch.sif" },
   allowedVirtualenvs: { "project-a": "/opt/venvs/project-a" },
+  allowedModules: { gcc: "gcc/12.2", cuda: "cuda/12.1" },
   allowedGres: { a100x1: "gpu:a100:1" },
   allowedAccounts: { research: "proj123" }, allowedQos: { normal: "normal" },
   allowedConstraints: { modern: "[zen3|zen4]" }, allowedNodelists: { "gpu-a": "gpu[01-02]" },
@@ -68,6 +69,27 @@ const ok = (stdout = ""): RemoteResult => ({ stdout, stderr: "", exitCode: 0 });
 const prepared = { content: Buffer.from("#!/bin/sh\necho ok\n"), relativePath: "jobs/test.sh", sha256: "abc123" };
 
 describe("Slurm client security boundaries", () => {
+  it("exports only policy-resolved modules through a verified modulecmd executable", async () => {
+    const remote = new MockExecutor([
+      ok("/work\n"), ok("/usr/bin/modulecmd\n"), ok(), ok(),
+      ok("/work/.slurm-agent/logs\n"), ok("/work/.slurm-agent/artifacts\n"),
+      ok("/work/.slurm-agent/submissions/staged\n"), ok("12345\n"),
+    ]);
+    const client = new SlurmClient(remote, "alice", "/work", policy);
+    await client.submit({
+      script: "jobs/test.sh", partition: "slurm-test", nodes: 1, ntasks: 1, cpusPerTask: 1,
+      memory: "1G", time: "00:10:00", memoryGb: 1, timeMinutes: 10,
+      modules: ["gcc", "cuda"], moduleValues: ["gcc/12.2", "cuda/12.1"],
+      launcher: "single", scriptArgs: [],
+    }, prepared);
+
+    expect(remote.commands[1]).toEqual({ executable: "realpath", args: ["-e", "--", "/usr/bin/modulecmd"] });
+    expect(remote.commands[2]).toEqual({ executable: "test", args: ["-x", "/usr/bin/modulecmd"] });
+    const exported = remote.commands.at(-1)?.args.find((argument) => argument.startsWith("--export="));
+    expect(exported).toContain("SLURM_AGENT_MODULECMD=/usr/bin/modulecmd");
+    expect(exported).toContain("SLURM_AGENT_MODULES=gcc/12.2:cuda/12.1");
+  });
+
   it("constructs submit from validated fields and fixed log paths", async () => {
     const remote = new MockExecutor([
       ok("/work\n"), ok(), ok("/work/.slurm-agent/logs\n"),

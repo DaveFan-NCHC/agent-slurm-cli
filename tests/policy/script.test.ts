@@ -16,7 +16,7 @@ const policy: Policy = {
   allowedLaunchers: ["single"], allowedMpiModes: [], allowedDistributions: [],
   maxLogLines: 10, maxLogBytes: 1024,
   maxArtifactBytes: 1024, maxArtifactFiles: 10, allowedSignals: [],
-  allowedApptainerImages: {}, allowedVirtualenvs: {},
+  allowedApptainerImages: {}, allowedVirtualenvs: {}, allowedModules: {},
   allowedGres: {},
   allowedAccounts: {}, allowedQos: {}, allowedConstraints: {}, allowedNodelists: {},
   allowedExcludeNodelists: {}, allowedReservations: {},

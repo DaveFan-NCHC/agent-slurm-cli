@@ -1,6 +1,6 @@
 ---
 name: slurm-agent-operations
-description: "Inspect effective policy and operate jobs through the constrained slurm-agent CLI, including staged input bundles, safe single/srun launchers, MPI/GPU resource placement, arrays and dependencies, filtered queue/history and node-resource inspection, pending-job diagnosis, fair-share inspection, safe job updates and signals, lifecycle controls, logs, and controlled artifact listing/downloads. Use for Slurm job lifecycle requests handled by this project; do not use it for cluster administration or generic SSH access."
+description: "Inspect effective policy and approved environment modules, then operate jobs through the constrained slurm-agent CLI, including module selection, staged input bundles, safe single/srun launchers, MPI/GPU resource placement, arrays and dependencies, filtered queue/history and node-resource inspection, pending-job diagnosis, fair-share inspection, safe job updates and signals, lifecycle controls, logs, and controlled artifact listing/downloads. Use for Slurm job lifecycle requests handled by this project; do not use it for cluster administration or generic SSH access."
 ---
 
 # Slurm Agent Operations
@@ -9,7 +9,7 @@ Use the installed `slurm-agent` executable as the only interface to the remote S
 
 ## Boundaries
 
-- Invoke only `submit`, `policy`, `cluster-info`, `nodes`, `list`, `history`, `fairshare`, `status`, `diagnose`, `usage`, `wait`, `logs`, `cancel`, `hold`, `release`, `requeue`, `update`, `signal`, `artifacts`, or `artifact`.
+- Invoke only `submit`, `policy`, `modules`, `cluster-info`, `nodes`, `list`, `history`, `fairshare`, `status`, `diagnose`, `usage`, `wait`, `logs`, `cancel`, `hold`, `release`, `requeue`, `update`, `signal`, `artifacts`, or `artifact`.
 - Never invoke or propose `ssh`, `exec`, `shell`, `run`, `scp`, `sftp`, arbitrary remote commands, or arbitrary remote/local paths.
 - Treat stdout as the machine-readable JSON response. Audit records may appear on stderr and must not be mixed into JSON parsing.
 - Do not expose SSH keys, credentials, or trusted `SLURM_*` environment values.
@@ -37,6 +37,7 @@ SLURM_SFTP_KNOWN_HOSTS or SLURM_SFTP_HOST_FINGERPRINT when the transfer endpoint
 SLURM_REMOTE_WORKSPACE
 SLURM_LOCAL_JOB_WORKSPACE   contains Agent-generated scripts and staged inputs
 SLURM_REMOTE_SRUN_PATH      operator-controlled srun executable path
+SLURM_REMOTE_MODULECMD_PATH operator-controlled Environment Modules/Lmod executable path
 SLURM_POLICY_PATH
 SLURM_LOCAL_ARTIFACTS     required for artifact downloads
 SLURM_AUDIT_LOG           optional; otherwise audit goes to stderr
@@ -48,7 +49,7 @@ Do not read or print credential files during ordinary operation. If configuratio
 
 `SLURM_REMOTE_WORKSPACE` must be a shared filesystem mounted at the same absolute path on the login node and all eligible compute nodes. Its `.slurm-agent/submissions`, logs, and artifacts are consumed on both sides.
 
-Policy-mapped Apptainer images and virtual environments must also be available with the same content at the same absolute path on the login and compute nodes. Shared storage is preferred, although identical per-node copies work. `SLURM_REMOTE_APPTAINER_PATH` and, when enabled, `SLURM_REMOTE_SRUN_PATH` may be node-local, but each executable must exist at that same path on every relevant node.
+Policy-mapped Apptainer images and virtual environments must also be available with the same content at the same absolute path on the login and compute nodes. Shared storage is preferred, although identical per-node copies work. `SLURM_REMOTE_APPTAINER_PATH`, `SLURM_REMOTE_SRUN_PATH`, and `SLURM_REMOTE_MODULECMD_PATH` may be node-local, but each enabled executable must exist at that same path on every relevant node; approved modulefiles must also be visible there.
 
 The CLI validates these paths only on the login node. If submission succeeds but the runner, image, virtual environment, log, or artifact path is missing when the job starts, report a likely compute-node mount/path mismatch to the operator; do not bypass the policy with another raw path.
 
@@ -140,6 +141,15 @@ slurm-agent submit ... --venv project-a
 The options are mutually exclusive. Never pass a raw path, image URI, bind mount, environment override, or runtime command. Policy maps the alias to a fixed path. By default an Apptainer alias is required, and a trusted CLI-generated runner forces the uploaded payload to execute inside that image with a clean environment, read-only workspace, and only that job's artifact directory writable. Do not add Apptainer commands to the payload merely to recreate this wrapper.
 
 Do not automatically retry an ambiguous failed submission, because the first submission might have reached Slurm. Inspect `list` once and ask for direction if the outcome cannot be established.
+
+List and select only operator-approved environment module aliases:
+
+```bash
+slurm-agent modules
+slurm-agent submit ... --module gcc --module cuda jobs/build.sh
+```
+
+Repeat `--module` in dependency/load order. Never pass a raw module name. Modules can be combined with host or virtualenv execution, but not with `--apptainer-image`. Modulefiles and the configured `modulecmd` executable are operator-trusted cluster configuration.
 
 ### Cluster information, filtered queries, diagnosis, usage, and wait
 

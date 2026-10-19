@@ -49,6 +49,9 @@ allowed_apptainer_images:
   pytorch: /opt/apptainer/pytorch.sif
 allowed_virtualenvs:
   project-a: /home/agent/venvs/project-a
+# Agent-visible aliases mapped to exact Environment Modules/Lmod module names.
+# Leave empty to disable module selection.
+allowed_modules: {}
 # Agent-visible aliases mapped to operator-controlled Slurm GRES requests.
 # Example: a100x1: gpu:a100:1
 allowed_gres: {}

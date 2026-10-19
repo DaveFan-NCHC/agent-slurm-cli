@@ -31,6 +31,7 @@ export interface Policy {
   allowedSignals: string[];
   allowedApptainerImages: Record<string, string>;
   allowedVirtualenvs: Record<string, string>;
+  allowedModules: Record<string, string>;
   allowedGres: Record<string, string>;
   allowedAccounts: Record<string, string>;
   allowedQos: Record<string, string>;

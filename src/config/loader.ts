@@ -29,6 +29,7 @@ export interface AppConfig {
   localJobWorkspace?: string;
   remoteApptainerPath: string;
   remoteSrunPath: string;
+  remoteModulecmdPath: string;
 }
 
 function required(env: NodeJS.ProcessEnv, name: string): string {
@@ -186,6 +187,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     remoteSrunPath: safeRemotePath(
       env.SLURM_REMOTE_SRUN_PATH?.trim() || "/usr/bin/srun",
       "SLURM_REMOTE_SRUN_PATH",
+    ),
+    remoteModulecmdPath: safeRemotePath(
+      env.SLURM_REMOTE_MODULECMD_PATH?.trim() || "/usr/bin/modulecmd",
+      "SLURM_REMOTE_MODULECMD_PATH",
     ),
   };
 }

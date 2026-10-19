@@ -53,6 +53,11 @@ allowed_apptainer_images:
   pytorch: /opt/apptainer/pytorch.sif
 allowed_virtualenvs:
   project-a: /home/agent/venvs/project-a
+# Agent-visible aliases mapped to exact Environment Modules/Lmod module names.
+# Modules run only with host or virtualenv runtimes, in the listed CLI order.
+allowed_modules:
+  gcc: gcc/12.2.0
+  cuda: cuda/12.1
 allowed_gres:
   a100x1: gpu:a100:1
   a100x2: gpu:a100:2

@@ -25,6 +25,7 @@ const policy: Policy = {
   maxArtifactBytes: 104857600, maxArtifactFiles: 1000, allowedSignals: ["TERM", "USR1"],
   allowedApptainerImages: { pytorch: "/opt/apptainer/pytorch.sif" },
   allowedVirtualenvs: { "project-a": "/opt/venvs/project-a" },
+  allowedModules: { gcc: "gcc/12.2", cuda: "cuda/12.1" },
   allowedGres: { a100x1: "gpu:a100:1" },
   allowedAccounts: { research: "proj123" }, allowedQos: { normal: "normal" },
   allowedConstraints: { modern: "[zen3|zen4]" }, allowedNodelists: { "gpu-a": "gpu[01-02]" },
@@ -116,6 +117,17 @@ describe("resource policy", () => {
   });
   it("maps a virtualenv alias to its fixed policy path", () => {
     expect(validateSubmit({ ...valid, venv: "project-a" }, policy).venvPath).toBe("/opt/venvs/project-a");
+  });
+  it("maps ordered module aliases to fixed module names", () => {
+    expect(validateSubmit({ ...valid, modules: ["gcc", "cuda"] }, policy).moduleValues)
+      .toEqual(["gcc/12.2", "cuda/12.1"]);
+  });
+  it.each(["unknown", "../gcc", "$(id)", "gcc,cuda"])("rejects module alias %j", (alias) => {
+    expect(() => validateSubmit({ ...valid, modules: [alias] }, policy)).toThrow();
+  });
+  it("rejects duplicate modules and Apptainer module selection", () => {
+    expect(() => validateSubmit({ ...valid, modules: ["gcc", "gcc"] }, policy)).toThrow();
+    expect(() => validateSubmit({ ...valid, modules: ["gcc"], apptainerImage: "pytorch" }, policy)).toThrow();
   });
   it.each(["unknown", "/etc/passwd", "$(id)", "name,ALL"])("rejects Apptainer alias %j", (alias) => {
     expect(() => validateSubmit({ ...valid, apptainerImage: alias }, policy)).toThrow();

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TRUSTED_RUNNER } from "../../src/slurm/runner.js";
@@ -35,7 +35,8 @@ describe("trusted submission runner", () => {
     expect(TRUSTED_RUNNER).toContain('"--cpus-per-task=${SLURM_AGENT_CPUS_PER_TASK}"');
     expect(TRUSTED_RUNNER).toContain('"--gpus-per-task=${SLURM_AGENT_GPUS_PER_TASK}"');
     expect(TRUSTED_RUNNER).toContain('"--mpi=${SLURM_AGENT_MPI_MODE}"');
-    expect(TRUSTED_RUNNER).not.toContain("eval ");
+    expect(TRUSTED_RUNNER).toContain('eval "${module_commands}"');
+    expect(TRUSTED_RUNNER).not.toContain('eval "$@"');
   });
 
   it("separates rank artifacts and preserves srun exit/signal propagation through exec", () => {
@@ -46,6 +47,47 @@ describe("trusted submission runner", () => {
   it("is valid POSIX shell syntax", () => {
     const checked = spawnSync("/bin/sh", ["-n"], { input: TRUSTED_RUNNER, encoding: "utf8" });
     expect(checked.status, checked.stderr).toBe(0);
+  });
+
+  it("loads selected modules in order without evaluating payload arguments", () => {
+    const root = mkdtempSync(join(tmpdir(), "slurm-agent-modules-"));
+    try {
+      const artifacts = join(root, "artifacts");
+      const inputs = join(root, "inputs");
+      const runner = join(root, "runner");
+      const payload = join(root, "payload");
+      const modulecmd = join(root, "modulecmd");
+      mkdirSync(artifacts);
+      mkdirSync(inputs);
+      writeFileSync(runner, TRUSTED_RUNNER);
+      writeFileSync(payload, `#!/bin/sh\nset -eu\nprintf '%s\\n' "$LOADEDMODULES" "$@" > "$SLURM_AGENT_ARTIFACT_DIR/result"\n`);
+      writeFileSync(modulecmd, `#!/bin/sh\nset -eu\n[ "$1" = sh ] && [ "$2" = load ]\nshift 2\nprintf "LOADEDMODULES='%s'; export LOADEDMODULES\\n" "$*"\n`);
+      chmodSync(runner, 0o700);
+      chmodSync(payload, 0o700);
+      chmodSync(modulecmd, 0o700);
+
+      const result = spawnSync(runner, ["literal;touch", "injected"], {
+        cwd: root,
+        env: {
+          ...process.env,
+          SLURM_JOB_ID: "124",
+          SLURM_AGENT_PAYLOAD: payload,
+          SLURM_AGENT_ARTIFACT_ROOT: artifacts,
+          SLURM_AGENT_RUNTIME_KIND: "host",
+          SLURM_AGENT_INPUT_DIR: inputs,
+          SLURM_AGENT_LAUNCHER: "single",
+          SLURM_AGENT_MODULECMD: modulecmd,
+          SLURM_AGENT_MODULES: "gcc/12.2:cuda/12.1",
+        },
+        encoding: "utf8",
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(readFileSync(join(artifacts, "124", "result"), "utf8"))
+        .toBe("gcc/12.2 cuda/12.1\nliteral;touch\ninjected\n");
+      expect(existsSync(join(root, "injected"))).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("executes a controlled srun step and gives each rank a separate artifact directory", () => {

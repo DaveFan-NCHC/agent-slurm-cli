@@ -33,6 +33,7 @@ describe("configuration path safety", () => {
     expect(config.ssh.workspace).toBe("/home/alice/work-space");
     expect(config.remoteApptainerPath).toBe("/usr/bin/apptainer");
     expect(config.remoteSrunPath).toBe("/usr/bin/srun");
+    expect(config.remoteModulecmdPath).toBe("/usr/bin/modulecmd");
   });
 
   it.each(["/home/alice/work,ALL", "/home/alice/work space", "/home/alice/../root"])(
@@ -53,6 +54,13 @@ describe("configuration path safety", () => {
       .toBe("/opt/slurm/bin/srun");
     expect(() => loadConfig(environment({ SLURM_REMOTE_SRUN_PATH: "/usr/bin/srun;id" })))
       .toThrowError(/SLURM_REMOTE_SRUN_PATH must be a safe absolute POSIX path/);
+  });
+
+  it("accepts a controlled modulecmd path and rejects unsafe values", () => {
+    expect(loadConfig(environment({ SLURM_REMOTE_MODULECMD_PATH: "/opt/lmod/libexec/lmod" })).remoteModulecmdPath)
+      .toBe("/opt/lmod/libexec/lmod");
+    expect(() => loadConfig(environment({ SLURM_REMOTE_MODULECMD_PATH: "/usr/bin/modulecmd;id" })))
+      .toThrowError(/SLURM_REMOTE_MODULECMD_PATH must be a safe absolute POSIX path/);
   });
 });
 

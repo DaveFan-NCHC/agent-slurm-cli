@@ -27,11 +27,14 @@ allowed_apptainer_images:
   pytorch: /opt/apptainer/pytorch.sif
 allowed_virtualenvs:
   project-a: /opt/venvs/project-a
+allowed_modules:
+  gcc: gcc/12.2.0
 `);
     try {
       const policy = loadPolicy(fixture.path);
       expect(policy.allowedApptainerImages.pytorch).toBe("/opt/apptainer/pytorch.sif");
       expect(policy.allowedVirtualenvs["project-a"]).toBe("/opt/venvs/project-a");
+      expect(policy.allowedModules.gcc).toBe("gcc/12.2.0");
       expect(policy.maxGpus).toBe(0);
       expect(policy.maxNtasksPerNode).toBe(0);
       expect(policy.maxGpusPerNode).toBe(0);
@@ -61,6 +64,15 @@ allowed_virtualenvs:
       expect(policy.allowedReservations).toEqual({});
     } finally { fixture.cleanup(); }
   });
+
+  it.each(["../gcc", "gcc;id", "gcc module", "/absolute/module", "gcc//12"])(
+    "rejects unsafe module name %j",
+    (name) => {
+      const fixture = policyFile(`${base}\nallowed_modules:\n  unsafe: '${name}'\n`);
+      try { expect(() => loadPolicy(fixture.path)).toThrow(); }
+      finally { fixture.cleanup(); }
+    },
+  );
 
   it("loads controlled Slurm submission aliases", () => {
     const fixture = policyFile(`${base}

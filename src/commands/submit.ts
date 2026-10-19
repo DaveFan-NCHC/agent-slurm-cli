@@ -21,6 +21,7 @@ export async function runSubmit(
     array: options.array, array_tasks: options.arrayTaskCount, array_concurrency: options.arrayConcurrency,
     dependency: options.dependency, dependency_jobs: options.dependencyJobIds,
     apptainer_image: options.apptainerImage, venv: options.venv,
+    modules: options.modules,
     launcher: options.launcher, mpi: options.mpi, distribution: options.distribution,
     script_sha256: script.sha256,
     ...(inputs.files.length > 0 ? {
@@ -44,6 +45,7 @@ export async function runSubmit(
       ...(options.mpi ? { mpi: options.mpi } : {}),
       ...(options.distribution ? { distribution: options.distribution } : {}),
     },
+    ...(options.modules?.length ? { modules: options.modules } : {}),
     ...(inputs.files.length > 0 ? {
       inputs: {
         files: inputs.files.length,

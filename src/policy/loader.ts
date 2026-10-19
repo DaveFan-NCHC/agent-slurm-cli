@@ -13,7 +13,7 @@ const keys = [
   "max_array_tasks", "max_array_concurrency", "max_dependency_jobs", "allowed_dependency_types",
   "allowed_launchers", "allowed_mpi_modes", "allowed_distributions",
   "max_artifact_bytes", "max_artifact_files", "allowed_signals",
-  "allowed_apptainer_images", "allowed_virtualenvs", "allowed_gres",
+  "allowed_apptainer_images", "allowed_virtualenvs", "allowed_modules", "allowed_gres",
   "allowed_accounts", "allowed_qos", "allowed_constraints", "allowed_nodelists",
   "allowed_exclude_nodelists", "allowed_reservations",
   "max_script_bytes", "max_script_args", "max_script_arg_length",
@@ -95,6 +95,29 @@ function identifierMap(value: unknown, key: string): Record<string, string> {
     }
     if (typeof name !== "string" || !aliasPattern.test(name)) {
       throw new AgentError("CONFIGURATION_ERROR", `${key}.${alias} must be a safe Slurm name.`, ExitCode.General);
+    }
+    result[alias] = name;
+  }
+  return result;
+}
+
+function moduleMap(value: unknown): Record<string, string> {
+  if (value === undefined) return {};
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new AgentError(
+      "CONFIGURATION_ERROR", "allowed_modules must be a mapping of aliases to module names.", ExitCode.General,
+    );
+  }
+  const result: Record<string, string> = {};
+  const modulePattern = /^[A-Za-z0-9][A-Za-z0-9_.+-]{0,127}(?:\/[A-Za-z0-9][A-Za-z0-9_.+-]{0,127})*$/;
+  for (const [alias, name] of Object.entries(value as Record<string, unknown>)) {
+    if (!aliasPattern.test(alias)) {
+      throw new AgentError("CONFIGURATION_ERROR", "allowed_modules contains an invalid alias.", ExitCode.General);
+    }
+    if (typeof name !== "string" || name.length > 256 || !modulePattern.test(name)) {
+      throw new AgentError(
+        "CONFIGURATION_ERROR", `allowed_modules.${alias} must be a safe module name.`, ExitCode.General,
+      );
     }
     result[alias] = name;
   }
@@ -260,6 +283,7 @@ export function loadPolicy(path: string): Policy {
     allowedSignals: signalNames(data.allowed_signals),
     allowedApptainerImages: fixedPathMap(data.allowed_apptainer_images, "allowed_apptainer_images"),
     allowedVirtualenvs: fixedPathMap(data.allowed_virtualenvs, "allowed_virtualenvs"),
+    allowedModules: moduleMap(data.allowed_modules),
     allowedGres: gresMap(data.allowed_gres, "allowed_gres"),
     allowedAccounts: identifierMap(data.allowed_accounts, "allowed_accounts"),
     allowedQos: identifierMap(data.allowed_qos, "allowed_qos"),

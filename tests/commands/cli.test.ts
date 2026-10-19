@@ -71,6 +71,7 @@ describe("CLI boundary", () => {
     expect(await main(["--help"], {}, stdout)).toBe(0);
     expect(stdout.value).toContain("slurm-agent submit");
     expect(stdout.value).toContain("slurm-agent policy");
+    expect(stdout.value).toContain("slurm-agent modules");
     expect(stdout.value).toContain("slurm-agent artifact JOB_ID --path RELATIVE_PATH [--force]");
     expect(stdout.value).toContain("slurm-agent artifacts JOB_ID [--download [--prefix RELATIVE_DIRECTORY] [--force]]");
     expect(stdout.value).not.toContain("slurm-agent artifact-bundle");
@@ -153,6 +154,9 @@ allowed_exclude_nodelists:
   maintenance: 'gpu[03,07-09]'
 allowed_reservations:
   workshop: ws2026
+allowed_modules:
+  gcc: gcc/12.2.0
+  cuda: cuda/12.1
 require_apptainer_for_generated_scripts: false
 `);
       const remote = new SubmitExecutor();
@@ -194,6 +198,34 @@ require_apptainer_for_generated_scripts: false
       expect(remote.uploads.map((upload) => upload.label)).toEqual([
         "payload", "input", "input", "manifest", "runner",
       ]);
+
+      const moduleRemote = new QueryExecutor([
+        { stdout: "/work\n", stderr: "", exitCode: 0 },
+        { stdout: "/usr/bin/modulecmd\n", stderr: "", exitCode: 0 },
+        { stdout: "", stderr: "", exitCode: 0 },
+        { stdout: "", stderr: "", exitCode: 0 },
+        { stdout: "/work/.slurm-agent/logs\n", stderr: "", exitCode: 0 },
+        { stdout: "/work/.slurm-agent/artifacts\n", stderr: "", exitCode: 0 },
+        { stdout: "/work/.slurm-agent/submissions/staged\n", stderr: "", exitCode: 0 },
+        { stdout: "12347\n", stderr: "", exitCode: 0 },
+      ]);
+      const moduleOutput = new Sink();
+      expect(await main(
+        ["submit", "-p", "p", "--module", "gcc", "--module", "cuda", "jobs/train.sh"],
+        {
+          SLURM_SSH_HOST: "host", SLURM_SSH_USER: "alice", SLURM_SSH_KEY_PATH: join(root, "key"),
+          SLURM_SSH_KNOWN_HOSTS: join(root, "known_hosts"), SLURM_REMOTE_WORKSPACE: "/work",
+          SLURM_LOCAL_JOB_WORKSPACE: root, SLURM_POLICY_PATH: join(root, "policy.yaml"),
+        },
+        moduleOutput,
+        new Sink() as never,
+        () => moduleRemote,
+      )).toBe(0);
+      expect(JSON.parse(moduleOutput.value)).toMatchObject({
+        ok: true, job_id: "12347", modules: ["gcc", "cuda"],
+      });
+      expect(moduleRemote.commands.at(-1)?.args.find((argument) => argument.startsWith("--export=")))
+        .toContain("SLURM_AGENT_MODULES=gcc/12.2.0:cuda/12.1");
 
       const dependencyRemote = new QueryExecutor([
         { stdout: "77|alice|prepare|p|RUNNING|00:01\n", stderr: "", exitCode: 0 },
@@ -282,6 +314,8 @@ max_artifact_files: 100
 allowed_signals: [TERM, USR1]
 allowed_apptainer_images:
   pytorch: /opt/apptainer/pytorch.sif
+allowed_modules:
+  gcc: gcc/12.2.0
 allowed_accounts:
   research: proj123
 require_apptainer_for_generated_scripts: false
@@ -330,6 +364,7 @@ require_apptainer_for_generated_scripts: false
           allowed_signals: ["TERM", "USR1"],
           allowed_apptainer_images: { pytorch: "/opt/apptainer/pytorch.sif" },
           allowed_virtualenvs: {},
+          allowed_modules: { gcc: "gcc/12.2.0" },
           allowed_gres: {},
           allowed_accounts: { research: "proj123" },
           allowed_qos: {},
@@ -344,6 +379,15 @@ require_apptainer_for_generated_scripts: false
         },
       });
       expect(policyRemote.commands).toEqual([]);
+
+      const modulesRemote = new QueryExecutor([]);
+      const modulesOutput = new Sink();
+      expect(await main(["modules"], env, modulesOutput, new Sink() as never, () => modulesRemote)).toBe(0);
+      expect(JSON.parse(modulesOutput.value)).toEqual({
+        ok: true,
+        modules: [{ alias: "gcc", name: "gcc/12.2.0" }],
+      });
+      expect(modulesRemote.commands).toEqual([]);
 
       const clusterRemote = new QueryExecutor([
         { stdout: "p*|up|01:00:00|1|idle|0/8/0/8|(null)\n", stderr: "", exitCode: 0 },

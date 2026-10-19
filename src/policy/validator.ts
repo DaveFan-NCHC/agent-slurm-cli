@@ -28,6 +28,7 @@ export interface SubmitOptions {
   jobName?: string;
   apptainerImage?: string;
   venv?: string;
+  modules?: string[];
   launcher?: string;
   mpi?: string;
   distribution?: string;
@@ -39,6 +40,7 @@ export interface NormalizedSubmit extends SubmitOptions {
   timeMinutes: number;
   apptainerImagePath?: string;
   venvPath?: string;
+  moduleValues?: string[];
   gresValue?: string;
   accountValue?: string;
   qosValue?: string;
@@ -93,6 +95,17 @@ function resolveGresAlias(alias: string | undefined, allowed: Record<string, str
   const value = allowed[alias];
   if (!value) throw policyDenied("GRES_ALIAS_NOT_ALLOWED", `GRES alias ${alias} is not permitted.`);
   return value;
+}
+
+function resolveModuleAliases(aliases: string[] | undefined, allowed: Record<string, string>): string[] {
+  const selected = aliases ?? [];
+  if (new Set(selected).size !== selected.length) throw invalid("--module aliases must not be repeated.");
+  return selected.map((alias) => {
+    if (!runtimeAliasPattern.test(alias)) throw invalid("Module must be a safe logical alias.");
+    const value = allowed[alias];
+    if (!value) throw policyDenied("MODULE_ALIAS_NOT_ALLOWED", `Module alias ${alias} is not permitted.`);
+    return value;
+  });
 }
 
 function resolvePolicyAlias(
@@ -355,6 +368,9 @@ export function validateSubmit(options: SubmitOptions, policy: Policy): Normaliz
   if (options.apptainerImage && options.venv) {
     throw invalid("--apptainer-image and --venv are mutually exclusive.");
   }
+  if (options.apptainerImage && options.modules?.length) {
+    throw invalid("--module cannot be combined with --apptainer-image; use modules provided by the image.");
+  }
   const gpuSelectors = [options.gpus, options.gpusPerNode, options.gpusPerTask, options.gres]
     .filter((value) => value !== undefined);
   if (gpuSelectors.length > 1) {
@@ -408,6 +424,7 @@ export function validateSubmit(options: SubmitOptions, policy: Policy): Normaliz
   }
   const apptainerImagePath = resolveRuntimeAlias(options.apptainerImage, policy.allowedApptainerImages, "Apptainer image");
   const venvPath = resolveRuntimeAlias(options.venv, policy.allowedVirtualenvs, "Virtual environment");
+  const moduleValues = resolveModuleAliases(options.modules, policy.allowedModules);
   if (policy.requireApptainerForGeneratedScripts && !apptainerImagePath) {
     throw policyDenied("RUNTIME_REQUIRED", "Policy requires an approved Apptainer image for agent-generated scripts.");
   }
@@ -501,7 +518,7 @@ export function validateSubmit(options: SubmitOptions, policy: Policy): Normaliz
     throw policyDenied("TIME_LIMIT_EXCEEDED", `time exceeds policy maximum ${policy.maxTimeMinutes} minutes.`);
   }
   return {
-    ...options, memoryGb, timeMinutes, apptainerImagePath, venvPath, gresValue,
+    ...options, memoryGb, timeMinutes, apptainerImagePath, venvPath, moduleValues, gresValue,
     accountValue, qosValue, constraintValue, nodelistValue, excludeValue, reservationValue,
     arrayTaskCount: array.taskCount, arrayConcurrency: array.concurrency,
     dependencyJobIds: dependency.jobIds, launcher,
