@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  DiscoveryClient, parseAssociations, parseModuleCatalog, parseReservations,
+  DiscoveryClient, parseAssociations, parseDiscoveryNodes, parseModuleCatalog, parseReservations,
 } from "../../src/discovery/client.js";
 import type {
   ArtifactDownload, RemoteExecutor, RemoteResult, SafeArtifactBundleTransfer, SafeArtifactTransfer,
@@ -63,10 +63,7 @@ describe("HPC discovery", () => {
   });
 
   it("discovers all Slurm-visible partitions and nodes without policy filters", async () => {
-    const node = [
-      "gpu01", "gpu*", "up", "idle", "0/64/0/64", "515000", "0", "500000",
-      "gpu:h200:8", "(null)", "zen4,h200", "zen4,h200", "(null)", "N/A", "102400",
-    ].join("|");
+    const node = ["gpu01", "gpu*", "idle", "64", "515000", "gpu:h200:8", "zen4,h200"].join("|");
     const remote = new MockExecutor([
       ok("gpu*|up|1-00:00:00|1|idle|0/64/0/64|gpu:h200:8\n"),
       ok(`${node}\n`),
@@ -76,9 +73,34 @@ describe("HPC discovery", () => {
     );
     const result = await client.cluster();
     expect(result.partitions[0]).toMatchObject({ partition: "gpu", nodes: 1 });
-    expect(result.nodes[0]).toMatchObject({ node_name: "gpu01", partition: "gpu" });
+    expect(result.nodes[0]).toEqual({
+      node_name: "gpu01", partition: "gpu", state: "idle", cpus: { total: 64 },
+      memory: { total_mib: 515000 }, gres: ["gpu:h200:8"], features: ["zen4", "h200"],
+    });
     expect(remote.commands[0]?.args).not.toEqual(expect.arrayContaining([expect.stringContaining("--partition=")]));
     expect(remote.commands[1]?.args).not.toEqual(expect.arrayContaining([expect.stringContaining("--partition=")]));
+    expect(remote.commands[1]).toEqual({
+      executable: "sinfo",
+      args: ["--noheader", "--Node", "--format=%N|%P|%T|%c|%m|%G|%f"],
+      maxOutputBytes: 1048576,
+    });
+  });
+
+  it("parses compact node discovery without splitting commas inside GRES details", () => {
+    expect(parseDiscoveryNodes(
+      "gpu01|gpu*|mixed|64|515000|gpu:a100:2(IDX:0,1),nvme:1|zen4,a100\n",
+    )).toEqual([{
+      node_name: "gpu01", partition: "gpu", state: "mixed", cpus: { total: 64 },
+      memory: { total_mib: 515000 }, gres: ["gpu:a100:2(IDX:0,1)", "nvme:1"],
+      features: ["zen4", "a100"],
+    }]);
+  });
+
+  it("rejects malformed compact node discovery rows", () => {
+    expect(() => parseDiscoveryNodes("gpu01|gpu|idle|64|515000|gpu:a100:4\n"))
+      .toThrowError(/Unexpected sinfo node discovery output/);
+    expect(() => parseDiscoveryNodes("gpu01|gpu|idle|many|515000|gpu:a100:4|a100\n"))
+      .toThrowError(/Unexpected sinfo CPU count output/);
   });
 
   it("discovers the live module catalog through the configured modulecmd", async () => {
@@ -91,7 +113,9 @@ describe("HPC discovery", () => {
     );
     await expect(client.modules()).resolves.toEqual({ modules: ["cuda/12.1", "gcc/12.2.0"] });
     expect(remote.commands[2]).toEqual({
-      executable: "/opt/lmod/libexec/lmod", args: ["bash", "-t", "avail"], maxOutputBytes: 1048576,
+      executable: "/opt/lmod/libexec/lmod",
+      args: ["bash", "--no_redirect", "-t", "avail"],
+      maxOutputBytes: 1048576,
     });
   });
 

@@ -1,9 +1,11 @@
 import { stripVTControlCharacters } from "node:util";
 import { AgentError, ExitCode } from "../errors/errors.js";
-import { parseClusterInfo, parseNodeInfo } from "../slurm/parser.js";
-import type { PartitionInfo, NodeInfo } from "../slurm/types.js";
+import { parseClusterInfo } from "../slurm/parser.js";
+import type { PartitionInfo } from "../slurm/types.js";
 import type { RemoteExecutor, RemoteResult, TrustedRemoteExecutablePath } from "../transport/types.js";
-import type { AssociationDiscovery, ReservationDiscovery, RuntimeDiscovery } from "./types.js";
+import type {
+  AssociationDiscovery, DiscoveryNodeInfo, ReservationDiscovery, RuntimeDiscovery,
+} from "./types.js";
 
 const MAX_DISCOVERY_OUTPUT_BYTES = 1048576;
 const moduleNamePattern = /^[A-Za-z0-9][A-Za-z0-9_.+-]{0,127}(?:\/[A-Za-z0-9][A-Za-z0-9_.+-]{0,127})*$/;
@@ -83,6 +85,55 @@ export function parseReservations(output: string): ReservationDiscovery[] {
   return reservations;
 }
 
+function parseNonNegativeInteger(value: string, context: string): number {
+  if (!/^\d+$/.test(value)) {
+    throw new AgentError("DISCOVERY_FAILED", `Unexpected ${context} output.`, ExitCode.General);
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) {
+    throw new AgentError("DISCOVERY_FAILED", `Unexpected ${context} output.`, ExitCode.General);
+  }
+  return parsed;
+}
+
+function splitSlurmList(value: string): string[] {
+  if (!value || ["N/A", "(null)", "None", "Unknown"].includes(value)) return [];
+  const entries: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    if (value[index] === "(") depth += 1;
+    else if (value[index] === ")" && depth > 0) depth -= 1;
+    else if (value[index] === "," && depth === 0) {
+      entries.push(value.slice(start, index));
+      start = index + 1;
+    }
+  }
+  entries.push(value.slice(start));
+  return entries.filter(Boolean);
+}
+
+export function parseDiscoveryNodes(output: string): DiscoveryNodeInfo[] {
+  return output.split(/\r?\n/).filter((line) => line.trim()).map((line) => {
+    const fields = line.split("|").map((field) => field.trim());
+    const nodeName = fields[0] ?? "";
+    const partition = (fields[1] ?? "").replace(/\*$/, "");
+    if (fields.length !== 7 || !/^[A-Za-z0-9_.-]+$/.test(nodeName) ||
+        !/^[A-Za-z0-9_.-]+$/.test(partition)) {
+      throw new AgentError("DISCOVERY_FAILED", "Unexpected sinfo node discovery output.", ExitCode.General);
+    }
+    return {
+      node_name: nodeName,
+      partition,
+      state: fields[2]!,
+      cpus: { total: parseNonNegativeInteger(fields[3]!, "sinfo CPU count") },
+      memory: { total_mib: parseNonNegativeInteger(fields[4]!, "sinfo memory") },
+      gres: splitSlurmList(fields[5]!),
+      features: splitSlurmList(fields[6]!),
+    };
+  });
+}
+
 export class DiscoveryClient {
   constructor(
     private readonly executor: RemoteExecutor,
@@ -106,7 +157,7 @@ export class DiscoveryClient {
     };
   }
 
-  async cluster(): Promise<{ partitions: PartitionInfo[]; nodes: NodeInfo[] }> {
+  async cluster(): Promise<{ partitions: PartitionInfo[]; nodes: DiscoveryNodeInfo[] }> {
     const partitions = await this.executor.run({
       executable: "sinfo",
       args: ["--noheader", "--format=%P|%a|%l|%D|%t|%C|%G"],
@@ -118,13 +169,13 @@ export class DiscoveryClient {
       executable: "sinfo",
       args: [
         "--noheader", "--Node",
-        "--Format=NodeList:.256|,Partition:.128|,Available:.16|,StateLong:.64|,CPUsState:.64|,Memory:.32|,AllocMem:.32|,FreeMem:.32|,Gres:.1024|,GresUsed:.1024|,Features:.1024|,features_act:.1024|,Reason:.256|,TimeStamp:.64|,Disk:.32",
+        "--format=%N|%P|%T|%c|%m|%G|%f",
       ],
       maxOutputBytes: MAX_DISCOVERY_OUTPUT_BYTES,
     });
     if (nodes.exitCode !== 0) failed(nodes, "Unable to discover Slurm nodes.");
     if (nodes.stdoutTruncated) failed(nodes, "Slurm node discovery exceeded the safe output limit.");
-    return { partitions: parseClusterInfo(partitions.stdout), nodes: parseNodeInfo(nodes.stdout) };
+    return { partitions: parseClusterInfo(partitions.stdout), nodes: parseDiscoveryNodes(nodes.stdout) };
   }
 
   async modules(): Promise<{ modules: string[] }> {
@@ -134,7 +185,7 @@ export class DiscoveryClient {
     }
     const result = await this.executor.run({
       executable: trustedExecutable(runtime.resolved_path, "modulecmd executable"),
-      args: ["bash", "-t", "avail"],
+      args: ["bash", "--no_redirect", "-t", "avail"],
       maxOutputBytes: MAX_DISCOVERY_OUTPUT_BYTES,
     });
     if (result.exitCode !== 0) failed(result, "Unable to discover environment modules.");

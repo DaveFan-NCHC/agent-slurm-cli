@@ -118,7 +118,7 @@ describe("CLI boundary", () => {
       const remote = new QueryExecutor([
         { stdout: "gpu*|up|01:00:00|1|idle|0/8/0/8|gpu:h200:1\n", stderr: "", exitCode: 0 },
         {
-          stdout: "gpu01|gpu*|up|idle|0/8/0/8|64000|0|63000|gpu:h200:1|(null)|h200|h200|(null)|N/A|1024\n",
+          stdout: "gpu01|gpu*|idle|8|64000|gpu:h200:1|h200\n",
           stderr: "", exitCode: 0,
         },
       ]);

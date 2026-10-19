@@ -24,3 +24,17 @@ export interface ReservationDiscovery {
   end_time?: string;
   flags: string[];
 }
+
+export interface DiscoveryNodeInfo {
+  node_name: string;
+  partition: string;
+  state: string;
+  cpus: {
+    total: number;
+  };
+  memory: {
+    total_mib: number;
+  };
+  gres: string[];
+  features: string[];
+}
