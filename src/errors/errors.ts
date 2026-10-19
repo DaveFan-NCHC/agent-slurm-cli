@@ -60,6 +60,7 @@ export type ErrorCode =
   | "LAUNCHER_NOT_ALLOWED"
   | "MPI_MODE_NOT_ALLOWED"
   | "DISTRIBUTION_NOT_ALLOWED"
+  | "DISCOVERY_FAILED"
   | "REMOTE_COMMAND_TIMEOUT";
 
 export class AgentError extends Error {

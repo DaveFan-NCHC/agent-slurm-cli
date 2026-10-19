@@ -1,4 +1,4 @@
-export const TRUSTED_RUNNER = `#!/bin/sh
+export const TRUSTED_RUNNER = `#!/bin/bash
 set -eu
 
 : "\${SLURM_AGENT_PAYLOAD:?}"
@@ -77,7 +77,7 @@ if [ -n "\${SLURM_AGENT_MODULES:-}" ]; then
     IFS=:
     set -- \${SLURM_AGENT_MODULES}
     IFS="\${saved_ifs}"
-    "\${SLURM_AGENT_MODULECMD}" sh load "$@"
+    "\${SLURM_AGENT_MODULECMD}" bash load "$@"
   }
   module_commands="$(load_module_commands)" || exit $?
   eval "\${module_commands}"

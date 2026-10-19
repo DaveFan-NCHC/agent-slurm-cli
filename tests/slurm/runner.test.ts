@@ -44,8 +44,8 @@ describe("trusted submission runner", () => {
     expect(TRUSTED_RUNNER).toContain('exec "${SLURM_AGENT_SRUN_EXECUTABLE}" "$@"');
   });
 
-  it("is valid POSIX shell syntax", () => {
-    const checked = spawnSync("/bin/sh", ["-n"], { input: TRUSTED_RUNNER, encoding: "utf8" });
+  it("is valid Bash syntax", () => {
+    const checked = spawnSync("/bin/bash", ["-n"], { input: TRUSTED_RUNNER, encoding: "utf8" });
     expect(checked.status, checked.stderr).toBe(0);
   });
 
@@ -61,7 +61,7 @@ describe("trusted submission runner", () => {
       mkdirSync(inputs);
       writeFileSync(runner, TRUSTED_RUNNER);
       writeFileSync(payload, `#!/bin/sh\nset -eu\nprintf '%s\\n' "$LOADEDMODULES" "$@" > "$SLURM_AGENT_ARTIFACT_DIR/result"\n`);
-      writeFileSync(modulecmd, `#!/bin/sh\nset -eu\n[ "$1" = sh ] && [ "$2" = load ]\nshift 2\nprintf "LOADEDMODULES='%s'; export LOADEDMODULES\\n" "$*"\n`);
+      writeFileSync(modulecmd, `#!/bin/sh\nset -eu\n[ "$1" = bash ] && [ "$2" = load ]\nshift 2\nprintf "LOADEDMODULES='%s'; export LOADEDMODULES\\n" "$*"\n`);
       chmodSync(runner, 0o700);
       chmodSync(payload, 0o700);
       chmodSync(modulecmd, 0o700);

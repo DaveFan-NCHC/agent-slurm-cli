@@ -72,6 +72,7 @@ describe("CLI boundary", () => {
     expect(stdout.value).toContain("slurm-agent submit");
     expect(stdout.value).toContain("slurm-agent policy");
     expect(stdout.value).toContain("slurm-agent modules");
+    expect(stdout.value).toContain("slurm-agent discover cluster|modules|associations|runtimes");
     expect(stdout.value).toContain("slurm-agent artifact JOB_ID --path RELATIVE_PATH [--force]");
     expect(stdout.value).toContain("slurm-agent artifacts JOB_ID [--download [--prefix RELATIVE_DIRECTORY] [--force]]");
     expect(stdout.value).not.toContain("slurm-agent artifact-bundle");
@@ -100,11 +101,49 @@ describe("CLI boundary", () => {
     ["signal", "1", "--signal", "TERM", "--scope", "children"],
     ["submit", "--partition", "p", "--exclusive=false", "jobs/a.sh"],
     ["list", "--input", "data.bin"],
+    ["discover", "unknown"],
+    ["discover", "cluster", "extra"],
   ])("rejects unexpected command options before loading credentials", async (...argv) => {
     const stdout = new Sink();
     const code = await main(argv, {}, stdout);
     expect(code).toBe(2);
     expect(JSON.parse(stdout.value)).toMatchObject({ ok: false, error: { code: "INVALID_ARGUMENT" } });
+  });
+
+  it("runs discovery without loading operational policy", async () => {
+    const root = mkdtempSync(join(tmpdir(), "slurm-agent-cli-discover-"));
+    try {
+      writeFileSync(join(root, "key"), "test-key");
+      writeFileSync(join(root, "known_hosts"), "host ssh-ed25519 AAAA\n");
+      const remote = new QueryExecutor([
+        { stdout: "gpu*|up|01:00:00|1|idle|0/8/0/8|gpu:h200:1\n", stderr: "", exitCode: 0 },
+        {
+          stdout: "gpu01|gpu*|up|idle|0/8/0/8|64000|0|63000|gpu:h200:1|(null)|h200|h200|(null)|N/A|1024\n",
+          stderr: "", exitCode: 0,
+        },
+      ]);
+      const stdout = new Sink();
+      expect(await main(
+        ["discover", "cluster"],
+        {
+          SLURM_SSH_HOST: "host", SLURM_SSH_USER: "alice", SLURM_SSH_KEY_PATH: join(root, "key"),
+          SLURM_SSH_KNOWN_HOSTS: join(root, "known_hosts"), SLURM_REMOTE_WORKSPACE: "/work",
+          SLURM_POLICY_PATH: join(root, "missing-policy.yaml"),
+        },
+        stdout,
+        new Sink() as never,
+        () => remote,
+      )).toBe(0);
+      expect(JSON.parse(stdout.value)).toMatchObject({
+        ok: true,
+        discovery: "cluster",
+        partitions: [{ partition: "gpu" }],
+        nodes: [{ node_name: "gpu01", partition: "gpu" }],
+      });
+      expect(remote.commands).toHaveLength(2);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("accepts sbatch-like options, a positional local script, and script arguments", async () => {

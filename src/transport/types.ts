@@ -1,7 +1,8 @@
-export type RemoteExecutable = "realpath" | "test" | "mkdir" | "rm" | "find" | "sha256sum" | "sbatch" | "squeue" | "sacct" | "scancel" | "scontrol" | "sinfo" | "sprio" | "sshare" | "sstat" | "tail";
+export type RemoteExecutable = "realpath" | "test" | "mkdir" | "rm" | "find" | "sha256sum" | "sbatch" | "squeue" | "sacct" | "sacctmgr" | "scancel" | "scontrol" | "sinfo" | "sprio" | "sshare" | "sstat" | "tail";
+export type TrustedRemoteExecutablePath = `/${string}`;
 
 export interface SafeCommand {
-  executable: RemoteExecutable;
+  executable: RemoteExecutable | TrustedRemoteExecutablePath;
   args: readonly string[];
   maxOutputBytes?: number;
 }

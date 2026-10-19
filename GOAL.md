@@ -68,6 +68,7 @@ interactive remote terminal
 ```text
 slurm-agent submit
 slurm-agent policy
+slurm-agent discover cluster|modules|associations|runtimes
 slurm-agent cluster-info
 slurm-agent modules
 slurm-agent nodes
@@ -92,6 +93,7 @@ slurm-agent wait JOB_ID
 已完成的能力包括：
 
 - read-only effective policy inspection；不提供 policy 修改介面。
+- 不依賴 operational policy 的 bootstrap discovery，可盤點 cluster、modules、user associations 與 configured runtimes，供 Agent 協助建立 policy。
 - artifact 單檔與整包下載使用 SFTP，遠端／本地 SHA-256 驗證後才安裝；支援明確 `--force` 原子覆寫與受控 `--prefix` 子目錄打包。
 - 受控 script staging 與 `sbatch` 提交。
 - nodes、tasks、CPU、memory、GPU/GRES、walltime 等有界資源請求。

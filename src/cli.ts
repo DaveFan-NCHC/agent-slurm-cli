@@ -7,6 +7,7 @@ import { runArtifacts, runArtifactsDownload } from "./commands/artifacts.js";
 import { runCancel } from "./commands/cancel.js";
 import { runClusterInfo } from "./commands/cluster-info.js";
 import { runDiagnose } from "./commands/diagnose.js";
+import { runDiscover } from "./commands/discover.js";
 import { runFairshare } from "./commands/fairshare.js";
 import { runHistory } from "./commands/history.js";
 import { runHold } from "./commands/hold.js";
@@ -24,6 +25,8 @@ import { runUsage } from "./commands/usage.js";
 import { runUpdate } from "./commands/update.js";
 import { runWait } from "./commands/wait.js";
 import { loadConfig } from "./config/loader.js";
+import { DiscoveryClient } from "./discovery/client.js";
+import type { DiscoveryTarget } from "./discovery/types.js";
 import { AgentError, ExitCode, invalid } from "./errors/errors.js";
 import { loadPolicy } from "./policy/loader.js";
 import { prepareInputBundle } from "./policy/input.js";
@@ -45,6 +48,7 @@ Usage:
   slurm-agent submit [options] SCRIPT [SCRIPT_ARGS...]
   slurm-agent policy
   slurm-agent cluster-info
+  slurm-agent discover cluster|modules|associations|runtimes
   slurm-agent modules
   slurm-agent nodes [--partition NAME] [--state STATE] [--feature ALIAS]
   slurm-agent list [--state STATES] [--partition NAME] [--name NAME] [--account ALIAS]
@@ -198,6 +202,12 @@ function prevalidateShape(parsed: Parsed): void {
     case "modules":
     case "fairshare":
       enforceShape(parsed, [], 0);
+      break;
+    case "discover":
+      enforceShape(parsed, [], 1);
+      if (!["cluster", "modules", "associations", "runtimes"].includes(parsed.positionals[0]!)) {
+        throw invalid("discover target must be cluster, modules, associations, or runtimes.");
+      }
       break;
     case "list":
       enforceShape(parsed, ["state", "partition", "name", "account", "limit", "sort", "array-view"], 0);
@@ -417,16 +427,29 @@ export async function main(
   let auditResources: Record<string, unknown> | undefined;
   try {
     const parsed = parseArgs(argv);
-    action = parsed.command;
-    if (!["submit", "policy", "cluster-info", "modules", "nodes", "list", "history", "fairshare", "status", "diagnose", "usage", "cancel", "hold", "release", "requeue", "update", "signal", "logs", "artifact", "artifacts", "wait"].includes(parsed.command)) {
+    action = parsed.command === "discover" && parsed.positionals[0]
+      ? `discover.${parsed.positionals[0]}`
+      : parsed.command;
+    if (!["submit", "policy", "discover", "cluster-info", "modules", "nodes", "list", "history", "fairshare", "status", "diagnose", "usage", "cancel", "hold", "release", "requeue", "update", "signal", "logs", "artifact", "artifacts", "wait"].includes(parsed.command)) {
       throw invalid(`Unknown command: ${parsed.command}.`);
     }
     prevalidateShape(parsed);
     const config = loadConfig(env);
-    const policy = loadPolicy(config.policyPath);
     sshUser = config.ssh.user;
     audit = new AuditLogger(config.auditLogPath, stderr);
     executor = executorFactory(config.ssh);
+    if (parsed.command === "discover") {
+      const discoveryClient = new DiscoveryClient(
+        executor, config.ssh.user,
+        config.remoteApptainerPath, config.remoteSrunPath, config.remoteModulecmdPath,
+      );
+      const response = await runDiscover(
+        discoveryClient, audit, config.ssh.user, parsed.positionals[0] as DiscoveryTarget,
+      );
+      writeJson(stdout, response);
+      return ExitCode.Success;
+    }
+    const policy = loadPolicy(config.policyPath);
     const client = new SlurmClient(
       executor, config.ssh.user, config.ssh.workspace, policy,
       config.localArtifactsPath, config.remoteApptainerPath, config.remoteSrunPath, config.remoteModulecmdPath,

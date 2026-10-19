@@ -7,6 +7,7 @@ The public interface contains only these Slurm lifecycle operations:
 ```text
 slurm-agent submit
 slurm-agent policy
+slurm-agent discover cluster|modules|associations|runtimes
 slurm-agent cluster-info
 slurm-agent modules
 slurm-agent nodes
@@ -29,6 +30,8 @@ slurm-agent wait JOB_ID
 ```
 
 There is deliberately no `exec`, `ssh`, `shell`, arbitrary path, generic file-transfer, or generic remote-command operation. Successful and failed operational commands write one JSON object to stdout. Audit events go to stderr or a protected file.
+
+The `discover` commands are bootstrap inventory operations for helping an operator configure policy. They require trusted SSH configuration but do not load `SLURM_POLICY_PATH` and do not filter results through operational allowlists. Slurm and the configured SSH identity still determine what the cluster exposes.
 
 ## Install
 
@@ -202,6 +205,19 @@ These paths belong only to the machine running the CLI and do **not** need to be
 The configured SSH account should also be restricted at the cluster and filesystem layers. The CLI boundary complements, but does not replace, least-privilege Unix and Slurm configuration.
 
 ## Usage
+
+### Bootstrap discovery
+
+Inspect the environment before creating or revising policy:
+
+```bash
+slurm-agent discover cluster
+slurm-agent discover modules
+slurm-agent discover associations
+slurm-agent discover runtimes
+```
+
+`cluster` returns all Slurm-visible partition summaries and node resources. `modules` invokes the configured Environment Modules/Lmod executable in terse mode and returns the live module catalog. `associations` reports the configured user's Slurm accounts, partitions, QOS values, and visible reservations; unavailable optional accounting data is returned as a warning. `runtimes` checks the configured Apptainer, srun, and modulecmd paths. Discovery is bounded and structured but is intentionally independent of policy. The Agent can use this inventory and the user's requirements to propose policy; the CLI does not generate or modify policy automatically.
 
 Agent-generated scripts are read from `SLURM_LOCAL_JOB_WORKSPACE`, uploaded to a CLI-generated staging directory below `SLURM_REMOTE_WORKSPACE`, and submitted through a trusted runner. The interface follows the safe subset of `sbatch`:
 

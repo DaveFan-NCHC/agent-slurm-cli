@@ -1,6 +1,6 @@
 ---
 name: slurm-agent-operations
-description: "Inspect effective policy and approved environment modules, then operate jobs through the constrained slurm-agent CLI, including module selection, staged input bundles, safe single/srun launchers, MPI/GPU resource placement, arrays and dependencies, filtered queue/history and node-resource inspection, pending-job diagnosis, fair-share inspection, safe job updates and signals, lifecycle controls, logs, and controlled artifact listing/downloads. Use for Slurm job lifecycle requests handled by this project; do not use it for cluster administration or generic SSH access."
+description: "Discover SSH-visible HPC resources for policy configuration, inspect effective policy and approved environment modules, then operate jobs through the constrained slurm-agent CLI, including module selection, staged input bundles, safe single/srun launchers, MPI/GPU resource placement, arrays and dependencies, filtered queue/history and node-resource inspection, pending-job diagnosis, fair-share inspection, safe job updates and signals, lifecycle controls, logs, and controlled artifact listing/downloads. Use for Slurm policy planning and job lifecycle requests handled by this project; do not use it for cluster administration or generic SSH access."
 ---
 
 # Slurm Agent Operations
@@ -9,7 +9,7 @@ Use the installed `slurm-agent` executable as the only interface to the remote S
 
 ## Boundaries
 
-- Invoke only `submit`, `policy`, `modules`, `cluster-info`, `nodes`, `list`, `history`, `fairshare`, `status`, `diagnose`, `usage`, `wait`, `logs`, `cancel`, `hold`, `release`, `requeue`, `update`, `signal`, `artifacts`, or `artifact`.
+- Invoke only `discover`, `submit`, `policy`, `modules`, `cluster-info`, `nodes`, `list`, `history`, `fairshare`, `status`, `diagnose`, `usage`, `wait`, `logs`, `cancel`, `hold`, `release`, `requeue`, `update`, `signal`, `artifacts`, or `artifact`.
 - Never invoke or propose `ssh`, `exec`, `shell`, `run`, `scp`, `sftp`, arbitrary remote commands, or arbitrary remote/local paths.
 - Treat stdout as the machine-readable JSON response. Audit records may appear on stderr and must not be mixed into JSON parsing.
 - Do not expose SSH keys, credentials, or trusted `SLURM_*` environment values.
@@ -44,6 +44,19 @@ SLURM_AUDIT_LOG           optional; otherwise audit goes to stderr
 ```
 
 Do not read or print credential files during ordinary operation. If configuration is missing, report the named missing setting without inventing a value.
+
+## Bootstrap discovery
+
+Before a policy exists, or when the user asks for help revising it, inspect the SSH-visible HPC environment through:
+
+```bash
+slurm-agent discover cluster
+slurm-agent discover modules
+slurm-agent discover associations
+slurm-agent discover runtimes
+```
+
+These commands do not load or apply operational policy. Use their structured inventory together with the user's intended workload to propose policy YAML. Do not claim that discovery grants permission to use a resource, and do not write or replace the protected policy file unless the user separately authorizes that local administrative change. `associations` may return warnings when accounting or reservation data is unavailable; preserve those uncertainties rather than inventing values. The CLI intentionally has no automatic policy-draft command.
 
 ### Remote path visibility
 
