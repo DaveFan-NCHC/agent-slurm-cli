@@ -64,7 +64,9 @@ describe("CLI boundary", () => {
     const stderr = new Sink();
     const code = await main([command, "id"], {}, stdout, stderr as never);
     expect(code).toBe(2);
-    expect(JSON.parse(stdout.value)).toMatchObject({ ok: false, error: { code: "INVALID_ARGUMENT" } });
+    expect(JSON.parse(stdout.value)).toMatchObject({
+      ok: false, error: { category: "INVALID_ARGUMENT", code: "INVALID_ARGUMENT" },
+    });
   });
   it("prints help without loading credentials", async () => {
     const stdout = new Sink();
@@ -199,6 +201,27 @@ allowed_modules:
   cuda: cuda/12.1
 require_apptainer_for_generated_scripts: false
 `);
+      const deniedOutput = new Sink();
+      expect(await main(
+        ["submit", "-p", "denied", "jobs/train.sh"],
+        {
+          SLURM_SSH_HOST: "host", SLURM_SSH_USER: "alice", SLURM_SSH_KEY_PATH: join(root, "key"),
+          SLURM_SSH_KNOWN_HOSTS: join(root, "known_hosts"), SLURM_REMOTE_WORKSPACE: "/work",
+          SLURM_LOCAL_JOB_WORKSPACE: root, SLURM_POLICY_PATH: join(root, "policy.yaml"),
+        },
+        deniedOutput,
+        new Sink() as never,
+        () => new QueryExecutor([]),
+      )).toBe(3);
+      expect(JSON.parse(deniedOutput.value)).toEqual({
+        ok: false,
+        error: {
+          category: "POLICY_DENIED",
+          code: "PARTITION_NOT_ALLOWED",
+          message: "Partition denied is not permitted.",
+        },
+      });
+
       const remote = new SubmitExecutor();
       const stdout = new Sink();
       const code = await main(

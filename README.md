@@ -48,7 +48,7 @@ slurm-agent --version
 For production, publish and install a pinned version during image/host bootstrap:
 
 ```bash
-npm install -g @nchc/slurm-agent@0.10.0
+npm install -g @nchc/slurm-agent@0.10.1
 command -v slurm-agent
 ```
 
@@ -453,10 +453,10 @@ Every single-file and bundle download calculates SHA-256 remotely, calculates it
 | 6 | job/log not found |
 | 7 | job ownership denied |
 
-Errors retain a stable machine-readable code, for example:
+Errors retain a stable machine-readable category and code. `POLICY_DENIED` means the request was rejected by an operator policy or path boundary and corresponds to process exit code 3:
 
 ```json
-{"ok":false,"error":{"code":"PARTITION_NOT_ALLOWED","message":"Partition gpu is not permitted."}}
+{"ok":false,"error":{"category":"POLICY_DENIED","code":"PARTITION_NOT_ALLOWED","message":"Partition gpu is not permitted."}}
 ```
 
 If a remote Slurm command fails, the error object also includes a sanitized `slurm_message` from remote stderr when one is available. It is limited to 4096 UTF-8 bytes; `slurm_message_truncated: true` indicates that additional output was omitted. Raw Slurm stderr is not written to the audit log.

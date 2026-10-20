@@ -27,7 +27,7 @@ import { runWait } from "./commands/wait.js";
 import { loadConfig } from "./config/loader.js";
 import { DiscoveryClient } from "./discovery/client.js";
 import type { DiscoveryTarget } from "./discovery/types.js";
-import { AgentError, ExitCode, invalid } from "./errors/errors.js";
+import { AgentError, errorCategoryForExitCode, ExitCode, invalid } from "./errors/errors.js";
 import { loadPolicy } from "./policy/loader.js";
 import { prepareInputBundle } from "./policy/input.js";
 import { prepareLocalScript } from "./policy/script.js";
@@ -41,7 +41,7 @@ import { SlurmClient } from "./slurm/client.js";
 import { SshExecutor } from "./transport/ssh.js";
 import type { RemoteExecutor } from "./transport/types.js";
 
-const VERSION = "0.10.0";
+const VERSION = "0.10.1";
 const HELP = `slurm-agent ${VERSION}
 
 Usage:
@@ -650,7 +650,11 @@ export async function main(
     } catch {
       // Preserve the original error and stdout contract if audit storage is unavailable.
     }
-    const responseError: Record<string, unknown> = { code: error.code, message: error.message };
+    const responseError: Record<string, unknown> = {
+      category: errorCategoryForExitCode(error.exitCode),
+      code: error.code,
+      message: error.message,
+    };
     if (typeof error.details?.slurm_message === "string") {
       responseError.slurm_message = error.details.slurm_message;
       if (error.details.slurm_message_truncated === true) responseError.slurm_message_truncated = true;

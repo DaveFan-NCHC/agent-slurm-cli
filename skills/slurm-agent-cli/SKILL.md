@@ -270,7 +270,7 @@ Do not add an output-path flag. The CLI verifies job ownership, remote and local
 
 ## JSON and failures
 
-Success has `ok: true`; failure has `ok: false` and an `error.code` plus `error.message`. Preserve both the JSON error and process exit code when reporting failures.
+Success has `ok: true`; failure has `ok: false` and an `error.category`, `error.code`, and `error.message`. Treat `error.category: "POLICY_DENIED"` as an explicit policy/path rejection and stop rather than trying to bypass it. Preserve both the JSON error and process exit code when reporting failures.
 
 ```text
 0 success

@@ -9,6 +9,27 @@ export const ExitCode = {
   PermissionDenied: 7,
 } as const;
 
+export type ErrorCategory =
+  | "GENERAL_FAILURE"
+  | "INVALID_ARGUMENT"
+  | "POLICY_DENIED"
+  | "TRANSPORT_FAILURE"
+  | "SLURM_FAILURE"
+  | "NOT_FOUND"
+  | "PERMISSION_DENIED";
+
+export function errorCategoryForExitCode(exitCode: number): ErrorCategory {
+  switch (exitCode) {
+    case ExitCode.InvalidArguments: return "INVALID_ARGUMENT";
+    case ExitCode.PolicyDenied: return "POLICY_DENIED";
+    case ExitCode.SshFailure: return "TRANSPORT_FAILURE";
+    case ExitCode.SlurmFailure: return "SLURM_FAILURE";
+    case ExitCode.NotFound: return "NOT_FOUND";
+    case ExitCode.PermissionDenied: return "PERMISSION_DENIED";
+    default: return "GENERAL_FAILURE";
+  }
+}
+
 export type ErrorCode =
   | "INVALID_ARGUMENT"
   | "INVALID_JOB_ID"
