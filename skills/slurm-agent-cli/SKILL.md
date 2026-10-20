@@ -1,5 +1,5 @@
 ---
-name: slurm-agent-operations
+name: slurm-agent-cli
 description: "Discover SSH-visible HPC resources for policy configuration, inspect effective policy and approved environment modules, then operate jobs through the constrained slurm-agent CLI, including module selection, staged input bundles, safe single/srun launchers, MPI/GPU resource placement, arrays and dependencies, filtered queue/history and node-resource inspection, pending-job diagnosis, fair-share inspection, safe job updates and signals, lifecycle controls, logs, and controlled artifact listing/downloads. Use for Slurm policy planning and job lifecycle requests handled by this project; do not use it for cluster administration or generic SSH access."
 ---
 
