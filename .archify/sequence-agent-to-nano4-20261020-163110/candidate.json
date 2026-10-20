@@ -1,0 +1,208 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "Agent 提交工作至 Nano4",
+    "locale": "zh-TW",
+    "output": ".archify/sequence-agent-to-nano4-20261020-163110/agent-to-nano4-submission.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://gitlab.td.nchc.org.tw/llm-taskforce/agentic-team/dev/dave/agent-slurm-cli.git",
+      "provider": "gitlab",
+      "link_mode": "web",
+      "revision": "1c1d8668ee7fcd175b013e5a398701b85fa748b8"
+    }
+  },
+  "participants": [
+    {
+      "id": "user",
+      "type": "external",
+      "label": "使用者",
+      "sublabel": "提出運算需求",
+      "sources": [
+        { "path": "README.md", "line": 3, "end_line": 32 }
+      ]
+    },
+    {
+      "id": "agent",
+      "type": "frontend",
+      "label": "Agent Harness",
+      "sublabel": "Valkyrja V2 或其他 Harness",
+      "sources": [
+        { "path": "README.md", "line": 3, "end_line": 3 }
+      ]
+    },
+    {
+      "id": "cli",
+      "type": "backend",
+      "label": "slurm-agent CLI",
+      "sublabel": "驗證與提交邊界",
+      "sources": [
+        { "path": "src/cli.ts", "line": 415, "end_line": 460 },
+        { "path": "src/cli.ts", "line": 563, "end_line": 597 },
+        { "path": "src/commands/submit.ts", "line": 6, "end_line": 64 }
+      ]
+    },
+    {
+      "id": "gateway",
+      "type": "security",
+      "label": "Nano4 Gateway",
+      "sublabel": "SSH / SFTP",
+      "sources": [
+        { "path": "README.md", "line": 77, "end_line": 87 },
+        { "path": "src/transport/ssh.ts", "line": 88, "end_line": 220 },
+        { "path": "src/transport/ssh.ts", "line": 421, "end_line": 472 }
+      ]
+    },
+    {
+      "id": "workspace",
+      "type": "database",
+      "label": "Nano4 工作區",
+      "sublabel": "受控提交目錄",
+      "sources": [
+        { "path": "src/slurm/client.ts", "line": 491, "end_line": 563 }
+      ]
+    },
+    {
+      "id": "slurm",
+      "type": "cloud",
+      "label": "Slurm Scheduler",
+      "sublabel": "Nano4 排程系統",
+      "sources": [
+        { "path": "src/slurm/client.ts", "line": 602, "end_line": 629 }
+      ]
+    }
+  ],
+  "segments": [
+    { "from": 150, "to": 235, "label": "需求與檢查" },
+    { "from": 245, "to": 425, "label": "安全連線與檔案暫存" },
+    { "from": 440, "to": 575, "label": "送交排程" },
+    { "from": 595, "to": 670, "label": "回報結果" }
+  ],
+  "messages": [
+    {
+      "id": "request-work",
+      "from": "user",
+      "to": "agent",
+      "y": 160,
+      "label": "描述運算需求",
+      "variant": "default"
+    },
+    {
+      "id": "submit-command",
+      "from": "agent",
+      "to": "cli",
+      "y": 195,
+      "label": "slurm-agent submit",
+      "variant": "emphasis",
+      "note": "CLI 解析參數、套用政策，並準備腳本與輸入檔"
+    },
+    {
+      "id": "verified-connection",
+      "from": "cli",
+      "to": "gateway",
+      "y": 260,
+      "label": "建立已驗證的 SSH / SFTP 連線",
+      "variant": "security",
+      "note": "以 known_hosts 或指紋驗證 Nano4 主機"
+    },
+    {
+      "id": "upload-bundle",
+      "from": "cli",
+      "to": "gateway",
+      "y": 320,
+      "label": "上傳 payload、inputs、runner",
+      "variant": "emphasis"
+    },
+    {
+      "id": "store-bundle",
+      "from": "gateway",
+      "to": "workspace",
+      "y": 350,
+      "label": "寫入受控提交目錄",
+      "variant": "default"
+    },
+    {
+      "id": "stored",
+      "from": "workspace",
+      "to": "gateway",
+      "y": 380,
+      "label": "暫存完成",
+      "variant": "return"
+    },
+    {
+      "id": "upload-complete",
+      "from": "gateway",
+      "to": "cli",
+      "y": 410,
+      "label": "上傳完成",
+      "variant": "return"
+    },
+    {
+      "id": "run-sbatch",
+      "from": "cli",
+      "to": "gateway",
+      "y": 455,
+      "label": "執行受限的 sbatch",
+      "variant": "security"
+    },
+    {
+      "id": "submit-scheduler",
+      "from": "gateway",
+      "to": "slurm",
+      "y": 490,
+      "label": "提交資源需求與 runner",
+      "variant": "emphasis"
+    },
+    {
+      "id": "scheduler-job-id",
+      "from": "slurm",
+      "to": "gateway",
+      "y": 525,
+      "label": "回傳 Job ID",
+      "variant": "return"
+    },
+    {
+      "id": "gateway-job-id",
+      "from": "gateway",
+      "to": "cli",
+      "y": 555,
+      "label": "回傳 Job ID",
+      "variant": "return"
+    },
+    {
+      "id": "json-result",
+      "from": "cli",
+      "to": "agent",
+      "y": 610,
+      "label": "JSON：ok + job_id",
+      "variant": "return"
+    },
+    {
+      "id": "user-result",
+      "from": "agent",
+      "to": "user",
+      "y": 645,
+      "label": "回報提交成功與 Job ID",
+      "variant": "return"
+    }
+  ],
+  "activations": [
+    { "participant": "agent", "from": 155, "to": 655, "type": "frontend" },
+    { "participant": "cli", "from": 190, "to": 620, "type": "backend" },
+    { "participant": "gateway", "from": 255, "to": 565, "type": "security" },
+    { "participant": "workspace", "from": 345, "to": 385, "type": "database" },
+    { "participant": "slurm", "from": 485, "to": 535, "type": "cloud" }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "重點",
+      "items": [
+        "Agent 只透過受限 CLI 提交工作",
+        "腳本與輸入先安全暫存於 Nano4 工作區",
+        "取得 Job ID 後即可進入後續查詢與監控循環"
+      ]
+    }
+  ]
+}
