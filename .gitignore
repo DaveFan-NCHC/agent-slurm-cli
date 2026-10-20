@@ -5,4 +5,7 @@ coverage/
 .env
 .npm/
 package/
-.archify/
+public/
+.archify/**/*.json
+!.archify/**/candidate.json
+.archify/**/review-*/

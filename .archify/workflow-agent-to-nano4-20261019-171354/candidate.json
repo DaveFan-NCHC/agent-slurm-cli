@@ -1,0 +1,200 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "Agent to HPC（Nano4）：本機端與 HPC 端流程",
+    "locale": "zh-TW",
+    "quality_profile": "showcase",
+    "output": ".archify/workflow-agent-to-nano4-20261019-171354/agent-to-nano4-flow.html",
+    "repository": {
+      "url": "https://gitlab.td.nchc.org.tw/llm-taskforce/agentic-team/dev/dave/agent-slurm-cli.git",
+      "provider": "gitlab",
+      "link_mode": "web",
+      "revision": "451d98d64ee16ba4ed3dfd9c0cbe2366c33126c3"
+    }
+  },
+  "lanes": [
+    { "id": "local", "label": "本機端" },
+    { "id": "hpc", "label": "HPC 端｜Nano4／Slurm" }
+  ],
+  "phases": [
+    { "id": "intent", "label": "提出任務", "fromCol": 0, "toCol": 1 },
+    { "id": "control", "label": "理解與把關", "fromCol": 2, "toCol": 3, "variant": "security" },
+    { "id": "operate", "label": "提交、執行、交付", "fromCol": 4, "toCol": 5, "variant": "emphasis" }
+  ],
+  "mainPath": [
+    "request",
+    "agent",
+    "intake",
+    "policy",
+    "transfer",
+    "queue",
+    "compute",
+    "retrieve"
+  ],
+  "semanticChecks": {
+    "allowedRoots": ["request"],
+    "allowedTerminals": ["rejected"],
+    "requiredPaths": [
+      { "from": "request", "to": "retrieve" },
+      { "from": "policy", "to": "rejected" }
+    ]
+  },
+  "nodes": [
+    {
+      "id": "request",
+      "lane": "local",
+      "col": 0,
+      "yOffset": -52,
+      "type": "external",
+      "label": "使用者提出運算需求",
+      "sublabel": "描述目標與資源需求",
+      "icon": "person",
+      "sources": [
+        { "path": "README.md", "line": 3, "end_line": 5, "label": "Agent 使用邊界" }
+      ]
+    },
+    {
+      "id": "agent",
+      "lane": "local",
+      "col": 1,
+      "yOffset": -52,
+      "type": "backend",
+      "label": "Agent 規劃工作",
+      "sublabel": "準備腳本、輸入與參數",
+      "tag": "Valkyrja V2 或其他 Harness",
+      "sources": [
+        { "path": "README.md", "line": 3, "end_line": 3, "label": "供 Agent 呼叫" },
+        { "path": "README.md", "line": 48, "end_line": 55, "label": "固定 CLI 能力" }
+      ]
+    },
+    {
+      "id": "intake",
+      "lane": "local",
+      "col": 2,
+      "yOffset": -52,
+      "type": "backend",
+      "label": "接收受限操作",
+      "sublabel": "解析命令並載入設定",
+      "sources": [
+        { "path": "src/cli.ts", "line": 428, "end_line": 457, "label": "CLI 入口" }
+      ]
+    },
+    {
+      "id": "policy",
+      "lane": "local",
+      "col": 3,
+      "yOffset": -52,
+      "type": "security",
+      "label": "政策與檔案檢查",
+      "sublabel": "限制資源、路徑與執行環境",
+      "tag": "不符合即拒絕",
+      "sources": [
+        { "path": "src/policy/validator.ts", "line": 362, "end_line": 430, "label": "提交政策" },
+        { "path": "src/policy/script.ts", "line": 14, "end_line": 58, "label": "腳本檢查" },
+        { "path": "src/policy/input.ts", "line": 96, "end_line": 153, "label": "輸入檔檢查" }
+      ]
+    },
+    {
+      "id": "transfer",
+      "lane": "local",
+      "col": 4,
+      "yOffset": -52,
+      "type": "cloud",
+      "label": "安全連線與提交",
+      "sublabel": "SSH 指令、SFTP 受控傳檔",
+      "tag": "Nano4 :22／:2222",
+      "sources": [
+        { "path": "README.md", "line": 77, "end_line": 87, "label": "Nano4 連線" },
+        { "path": "src/transport/ssh.ts", "line": 88, "end_line": 220, "label": "驗證連線" },
+        { "path": "src/transport/ssh.ts", "line": 425, "end_line": 470, "label": "受控上傳" }
+      ]
+    },
+    {
+      "id": "queue",
+      "lane": "hpc",
+      "col": 4,
+      "type": "messagebus",
+      "label": "Slurm 排程",
+      "sublabel": "核准資源送入 Nano4",
+      "sources": [
+        { "path": "src/slurm/client.ts", "line": 536, "end_line": 563, "label": "sbatch 提交" }
+      ]
+    },
+    {
+      "id": "compute",
+      "lane": "hpc",
+      "col": 5,
+      "type": "cloud",
+      "label": "Compute Node 執行",
+      "sublabel": "使用預備映像檔或執行環境",
+      "tag": "產生 Log 與成果",
+      "sources": [
+        { "path": "src/slurm/runner.ts", "line": 16, "end_line": 22, "label": "成果目錄" },
+        { "path": "src/slurm/runner.ts", "line": 87, "end_line": 123, "label": "Runtime 執行" }
+      ]
+    },
+    {
+      "id": "retrieve",
+      "lane": "local",
+      "col": 5,
+      "yOffset": -52,
+      "type": "frontend",
+      "label": "監控、取回並回報",
+      "sublabel": "交付狀態、Log 與成果",
+      "tag": "結構化結果",
+      "icon": "success",
+      "sources": [
+        { "path": "src/slurm/client.ts", "line": 633, "end_line": 661, "label": "等待與 Log" },
+        { "path": "src/slurm/client.ts", "line": 664, "end_line": 695, "label": "成果下載" },
+        { "path": "src/cli.ts", "line": 633, "end_line": 654, "label": "JSON 回應" }
+      ]
+    },
+    {
+      "id": "rejected",
+      "lane": "local",
+      "col": 4,
+      "yOffset": 64,
+      "type": "security",
+      "label": "安全拒絕",
+      "sublabel": "回傳錯誤並留下稽核",
+      "icon": "stop",
+      "sources": [
+        { "path": "src/policy/validator.ts", "line": 362, "end_line": 366, "label": "Policy 拒絕" },
+        { "path": "src/cli.ts", "line": 635, "end_line": 654, "label": "錯誤回應" },
+        { "path": "src/audit/logger.ts", "line": 14, "end_line": 27, "label": "稽核紀錄" }
+      ]
+    }
+  ],
+  "edges": [
+    { "id": "request-agent", "from": "request", "to": "agent", "label": "自然語言需求", "variant": "default", "role": "main" },
+    { "id": "agent-intake", "from": "agent", "to": "intake", "label": "slurm-agent 操作", "variant": "emphasis", "role": "main" },
+    { "id": "intake-policy", "from": "intake", "to": "policy", "label": "標準化請求", "variant": "security", "role": "main" },
+    { "id": "policy-transfer", "from": "policy", "to": "transfer", "label": "核准", "variant": "emphasis", "role": "main" },
+    { "id": "policy-rejected", "from": "policy", "to": "rejected", "label": "超出政策或輸入不安全", "variant": "security", "role": "error" },
+    { "id": "transfer-queue", "from": "transfer", "to": "queue", "label": "sbatch", "variant": "default", "role": "main" },
+    { "id": "queue-compute", "from": "queue", "to": "compute", "label": "取得資源後執行", "variant": "emphasis", "role": "main" },
+    { "id": "compute-retrieve", "from": "compute", "to": "retrieve", "label": "狀態、Log、Artifacts", "variant": "dashed", "role": "return" },
+    { "id": "retrieve-agent", "from": "retrieve", "to": "agent", "label": "結果回饋，調整下一輪", "variant": "emphasis", "role": "return" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "事前準備",
+      "items": [
+        "Valkyrja V2，或具備 SSH 執行環境的其他 Harness",
+        "一組不需要互動式 OTP 的 Nano4 帳號",
+        "預先拉取的 Apptainer 映像檔，或準備完成的執行環境"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "這個專案的核心價值",
+      "items": [
+        "Agent 不取得任意 SSH／Shell 能力，只能呼叫明確的 Slurm 操作",
+        "資源、檔案路徑、Job ownership 與下載範圍都受政策限制",
+        "成功與失敗都回傳穩定 JSON，並留下可稽核紀錄"
+      ]
+    }
+  ]
+}

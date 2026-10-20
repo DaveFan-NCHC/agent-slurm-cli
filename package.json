@@ -15,6 +15,7 @@
   ],
   "scripts": {
     "build": "node scripts/clean.mjs && tsc -p tsconfig.json && node scripts/make-executable.mjs",
+    "build:pages": "node scripts/build-archify-pages.mjs",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "prepack": "npm run build"

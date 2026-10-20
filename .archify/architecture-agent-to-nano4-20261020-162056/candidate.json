@@ -1,0 +1,188 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Agent to HPC（Nano4）系統架構",
+    "locale": "zh-TW",
+    "quality_profile": "showcase",
+    "output": ".archify/architecture-agent-to-nano4-20261020-162056/agent-to-nano4-architecture.html",
+    "repository": {
+      "url": "https://gitlab.td.nchc.org.tw/llm-taskforce/agentic-team/dev/dave/agent-slurm-cli.git",
+      "provider": "gitlab",
+      "link_mode": "web",
+      "revision": "3ff0702ac2e9a89d895e64b4155767858cb2f017"
+    }
+  },
+  "components": [
+    {
+      "id": "user",
+      "type": "external",
+      "label": "使用者",
+      "sublabel": "提出運算需求",
+      "icon": "person",
+      "pos": [40, 280],
+      "size": [120, 64],
+      "sources": [
+        { "path": "README.md", "line": 3, "end_line": 5, "label": "Agent 使用情境" }
+      ]
+    },
+    {
+      "id": "harness",
+      "type": "backend",
+      "label": "Agent Harness",
+      "sublabel": "Valkyrja V2／其他 Harness",
+      "tag": "規劃與迭代",
+      "pos": [230, 280],
+      "size": [150, 72],
+      "sources": [
+        { "path": "README.md", "line": 3, "end_line": 3, "label": "供 Agent 呼叫" },
+        { "path": "README.md", "line": 48, "end_line": 55, "label": "固定安裝與權限" }
+      ]
+    },
+    {
+      "id": "cli",
+      "type": "security",
+      "label": "slurm-agent CLI",
+      "sublabel": "受限 Slurm 能力邊界",
+      "tag": "無任意 Shell／SSH",
+      "pos": [470, 280],
+      "size": [170, 76],
+      "sources": [
+        { "path": "README.md", "line": 5, "end_line": 32, "label": "公開能力邊界" },
+        { "path": "src/cli.ts", "line": 431, "end_line": 460, "label": "CLI 入口與客戶端" }
+      ]
+    },
+    {
+      "id": "policy",
+      "type": "security",
+      "label": "Policy 與可信設定",
+      "sublabel": "資源上限、Alias、連線身分",
+      "pos": [470, 90],
+      "size": [170, 72],
+      "sources": [
+        { "path": "src/config/loader.ts", "line": 164, "end_line": 195, "label": "可信環境設定" },
+        { "path": "src/policy/loader.ts", "line": 240, "end_line": 302, "label": "Policy 限制" }
+      ]
+    },
+    {
+      "id": "local_store",
+      "type": "database",
+      "label": "本機工作區與稽核",
+      "sublabel": "腳本、輸入、成果與 Audit",
+      "pos": [470, 470],
+      "size": [170, 72],
+      "sources": [
+        { "path": "README.md", "line": 59, "end_line": 74, "label": "本機路徑設定" },
+        { "path": "src/config/loader.ts", "line": 179, "end_line": 182, "label": "本機儲存路徑" },
+        { "path": "src/audit/logger.ts", "line": 14, "end_line": 27, "label": "Audit 寫入" }
+      ]
+    },
+    {
+      "id": "gateway",
+      "type": "cloud",
+      "label": "Nano4 Login／Transfer",
+      "sublabel": "SSH :22／SFTP :2222",
+      "tag": "Host identity verified",
+      "pos": [780, 280],
+      "size": [170, 76],
+      "sources": [
+        { "path": "README.md", "line": 77, "end_line": 87, "label": "Nano4 端點" },
+        { "path": "src/transport/ssh.ts", "line": 88, "end_line": 220, "label": "SSH 驗證與連線" }
+      ]
+    },
+    {
+      "id": "remote_workspace",
+      "type": "database",
+      "label": "Nano4 共享工作區",
+      "sublabel": "Payload、Inputs、Logs、Artifacts",
+      "pos": [780, 470],
+      "size": [170, 72],
+      "sources": [
+        { "path": "src/slurm/client.ts", "line": 491, "end_line": 562, "label": "受控遠端目錄與上傳" }
+      ]
+    },
+    {
+      "id": "scheduler",
+      "type": "messagebus",
+      "label": "Slurm Scheduler",
+      "sublabel": "Queue、資源配置與 Job 控制",
+      "pos": [1050, 280],
+      "size": [160, 72],
+      "sources": [
+        { "path": "src/slurm/client.ts", "line": 602, "end_line": 629, "label": "sbatch 提交" },
+        { "path": "src/slurm/client.ts", "line": 632, "end_line": 676, "label": "Job 控制" }
+      ]
+    },
+    {
+      "id": "compute",
+      "type": "cloud",
+      "label": "Nano4 Compute Nodes",
+      "sublabel": "CPU／GPU 執行工作",
+      "pos": [1050, 470],
+      "size": [160, 72],
+      "sources": [
+        { "path": "src/slurm/runner.ts", "line": 87, "end_line": 130, "label": "srun 啟動" },
+        { "path": "src/slurm/runner.ts", "line": 150, "end_line": 190, "label": "Payload 執行" }
+      ]
+    },
+    {
+      "id": "runtime",
+      "type": "backend",
+      "label": "預備執行環境",
+      "sublabel": "Apptainer／Venv／Modules",
+      "pos": [1050, 650],
+      "size": [160, 72],
+      "sources": [
+        { "path": "src/policy/loader.ts", "line": 274, "end_line": 300, "label": "允許的 Runtime" },
+        { "path": "src/slurm/runner.ts", "line": 136, "end_line": 190, "label": "Runtime 選擇" }
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "本機端｜Agent 執行環境",
+      "wraps": ["harness", "cli", "policy", "local_store"],
+      "pad": 26
+    },
+    {
+      "kind": "region",
+      "label": "HPC 端｜Nano4",
+      "wraps": ["gateway", "remote_workspace", "scheduler", "compute", "runtime"],
+      "pad": 26
+    }
+  ],
+  "connections": [
+    { "id": "user-harness", "from": "user", "to": "harness", "label": "運算需求", "variant": "emphasis" },
+    { "id": "harness-cli", "from": "harness", "to": "cli", "label": "受控操作", "variant": "emphasis" },
+    { "id": "cli-policy", "from": "cli", "to": "policy", "label": "檢查資源與權限", "variant": "security" },
+    { "id": "cli-local-store", "from": "cli", "to": "local_store", "label": "讀取輸入／寫入稽核", "variant": "dashed" },
+    { "id": "cli-gateway", "from": "cli", "to": "gateway", "label": "驗證 SSH／SFTP", "variant": "security" },
+    { "id": "gateway-scheduler", "from": "gateway", "to": "scheduler", "label": "Slurm 指令", "variant": "emphasis" },
+    { "id": "gateway-workspace", "from": "gateway", "to": "remote_workspace", "label": "上傳 Payload／Inputs", "variant": "dashed" },
+    { "id": "scheduler-compute", "from": "scheduler", "to": "compute", "label": "排程與配置資源", "variant": "emphasis" },
+    { "id": "compute-runtime", "from": "compute", "to": "runtime", "label": "啟動核准環境", "variant": "default" },
+    { "id": "compute-workspace", "from": "compute", "to": "remote_workspace", "label": "寫入 Logs／Artifacts", "variant": "dashed" },
+    { "id": "workspace-local", "from": "remote_workspace", "to": "local_store", "label": "驗證後下載成果", "variant": "emphasis" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "事前準備",
+      "items": [
+        "Valkyrja V2，或具備 SSH 執行環境的其他 Harness",
+        "一組不需要互動式 OTP 的 Nano4 帳號",
+        "預先準備的 Apptainer 映像檔或執行環境"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "安全邊界",
+      "items": [
+        "Agent 只能呼叫明確的 Slurm lifecycle operations",
+        "Policy 限制資源、Runtime、路徑與可操作的 Job",
+        "SSH／SFTP 驗證主機身分，成果下載後驗證 SHA-256"
+      ]
+    }
+  ]
+}

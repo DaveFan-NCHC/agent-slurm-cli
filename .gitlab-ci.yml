@@ -3,6 +3,7 @@ image: node:22-bookworm-slim
 stages:
   - test
   - build
+  - deploy
 
 workflow:
   rules:
@@ -48,3 +49,22 @@ package:
     paths:
       - dist/
       - package/*.tgz
+
+deploy-pages:
+  stage: deploy
+  needs:
+    - job: package
+      artifacts: false
+  before_script: []
+  script:
+    - npm run build:pages
+    - test -s public/index.html
+  pages: true
+  artifacts:
+    paths:
+      - public/
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+  environment:
+    name: gitlab-pages
+    url: '$CI_PAGES_URL'
