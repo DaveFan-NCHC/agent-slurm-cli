@@ -5,3 +5,4 @@ coverage/
 .env
 .npm/
 package/
+.archify/
