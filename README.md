@@ -251,6 +251,19 @@ slurm-agent submit -p slurm-test \
 
 Inputs keep their safe workspace-relative paths below a generated submission `inputs/` directory. The payload reads its input root from `SLURM_AGENT_INPUT_DIR`; Apptainer sees it as read-only `/inputs`. Host and virtualenv runtimes receive the job-specific remote directory, but those modes are not sandboxes: because the payload runs as the same Unix identity, it can modify staged files. Arrays share one staged input bundle. The response and audit event contain only file count, total bytes, and a deterministic manifest SHA-256, not file contents. A failed upload never reaches `sbatch`; an incomplete random staging directory is unusable and may later be removed by the operator's retention policy.
 
+Reuse an owned upstream job artifact without exposing the remote workspace layout by combining a dependency with a repeatable artifact input reference:
+
+```bash
+slurm-agent submit -p slurm-test \
+  --dependency afterok:12345 \
+  --artifact-input 12345:results/model.bin:models/model.bin \
+  --apptainer-image pytorch jobs/evaluate.sh
+```
+
+The format is `JOB_ID:SOURCE_PATH[:DESTINATION_PATH]`. When the destination is omitted it defaults to the source path. The downstream payload reads the copied file below its normal input root, for example `"$SLURM_AGENT_INPUT_DIR/models/model.bin"`; it never needs `/workspace` or `.slurm-agent` paths. Use an explicit array task ID such as `12345_7` to consume one array task's artifacts.
+
+Artifact inputs are ownership-checked at submission and copied only when the downstream job starts, so an `afterok` pipeline can be submitted while the producer is still running. Dependencies are not added implicitly: use `afterok` when successful producer completion is required. Source and destination paths must be safe relative paths, symlink sources are rejected, destination collisions are rejected, and local plus artifact inputs share `max_input_files`, `max_input_file_bytes`, and `max_input_total_bytes`. Runtime staging failure causes the downstream job to fail before its payload starts.
+
 Choose at most one runtime alias per submission:
 
 ```bash
@@ -462,7 +475,7 @@ If a remote Slurm command fails, the error object also includes a sanitized `slu
 - Script and log paths are checked with remote `realpath`, preventing traversal and symlink escape.
 - Artifact transfer uses the configured SFTP connection for both single files and bundles after remote containment checks; it is not an SFTP browser. Bundle creation, checksum calculation, and cleanup stay on the command connection. Remote and local SHA-256 values must match before an atomic local install. Local destinations are created without overwrite unless the caller explicitly supplies `--force`, which can replace only a regular file after successful verification.
 - Audit records never contain private keys, credentials, command stderr, or environment values.
-- The remote host needs Bash, GNU-compatible `realpath`, `test`, `mkdir`, `rm`, `head`, `wc`, `tail`, `find`, `tar`, and `sha256sum`, plus `sbatch`, `squeue`, `sacct`, `scancel`, `scontrol`, `sinfo`, `sprio`, `sshare`, and `sstat` in its non-interactive PATH. `srun` is additionally required at `SLURM_REMOTE_SRUN_PATH` when that launcher is enabled. `sprio` may return no factors on clusters without multifactor priority; this is a supported diagnose degradation.
+- The remote host needs Bash, GNU-compatible `realpath`, `test`, `mkdir`, `rm`, `cp`, `mv`, `head`, `wc`, `tail`, `find`, `tar`, and `sha256sum`, plus `sbatch`, `squeue`, `sacct`, `scancel`, `scontrol`, `sinfo`, `sprio`, `sshare`, and `sstat` in its non-interactive PATH. `srun` is additionally required at `SLURM_REMOTE_SRUN_PATH` when that launcher is enabled. `sprio` may return no factors on clusters without multifactor priority; this is a supported diagnose degradation.
 - Cluster-wide enforcement still belongs in Slurm configuration such as account/QOS limits and `job_submit` policy; the CLI policy is an additional capability boundary, not a replacement for scheduler controls.
 - Completed-job lookup depends on Slurm accounting (`sacct`) retention and permissions. If no allocation record is visible, the CLI reports `JOB_NOT_FOUND`.
 - Live resource metrics depend on Slurm's `jobacct_gather` support. If `sstat` is unavailable for a running job, `usage` returns accounting data with `live_available: false`.

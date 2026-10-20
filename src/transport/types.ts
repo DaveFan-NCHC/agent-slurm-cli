@@ -43,7 +43,7 @@ export interface SafeSubmissionUpload {
   remotePath: string;
   maxBytes: number;
   mode?: 0o600 | 0o700;
-  label?: "payload" | "runner" | "input" | "manifest";
+  label?: "payload" | "runner" | "input" | "manifest" | "artifact-input-manifest";
 }
 
 export interface RemoteExecutor {

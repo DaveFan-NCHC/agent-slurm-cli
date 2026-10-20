@@ -98,6 +98,7 @@ Submit options:
   --venv ALIAS
   --module ALIAS         repeatable policy-defined environment module
   --input PATH          repeatable workspace-relative staged input
+  --artifact-input REF  repeatable JOB_ID:SOURCE_PATH[:DESTINATION_PATH]
   --launcher single|srun
   --mpi MODE            policy-approved srun MPI mode
   --distribution block|cyclic
@@ -154,7 +155,7 @@ function parseArgs(argv: string[]): Parsed {
     const key = rawKey === "memory" ? "mem" : rawKey;
     const value = equals >= 0 ? token.slice(equals + 1) : argv[++index];
     if (!key || value === undefined || (equals < 0 && value.startsWith("--"))) throw invalid(`Option --${key} requires a value.`);
-    if (key === "input" || key === "module") {
+    if (key === "input" || key === "artifact-input" || key === "module") {
       repeatedOptions.set(key, [...(repeatedOptions.get(key) ?? []), value]);
       continue;
     }
@@ -168,12 +169,13 @@ const submitOptions = [
   "partition", "nodes", "ntasks", "ntasks-per-node", "cpus-per-task", "mem", "mem-per-cpu",
   "gpus", "gpus-per-node", "gpus-per-task", "gres", "exclusive", "array", "dependency",
   "account", "qos", "constraint", "nodelist", "exclude", "reservation", "time", "job-name", "apptainer-image", "venv",
-  "module", "launcher", "mpi", "distribution",
+  "module", "artifact-input", "launcher", "mpi", "distribution",
 ];
 
 function enforceSubmitShape(parsed: Parsed): void {
   const unknown = [...parsed.options.keys()].filter((key) => !submitOptions.includes(key));
-  const unknownRepeated = [...parsed.repeatedOptions.keys()].filter((key) => key !== "input" && key !== "module");
+  const unknownRepeated = [...parsed.repeatedOptions.keys()]
+    .filter((key) => key !== "input" && key !== "artifact-input" && key !== "module");
   if (unknown.length || unknownRepeated.length) {
     throw invalid(`Unknown option(s): ${[...unknown, ...unknownRepeated].map((key) => `--${key}`).join(", ")}.`);
   }
@@ -335,6 +337,7 @@ function parseSubmit(parsed: Parsed, policy: ReturnType<typeof loadPolicy>): Ret
     apptainerImage: parsed.options.get("apptainer-image"),
     venv: parsed.options.get("venv"),
     modules: parsed.repeatedOptions.get("module"),
+    artifactInputs: parsed.repeatedOptions.get("artifact-input"),
     launcher: parsed.options.get("launcher"),
     mpi: parsed.options.get("mpi"),
     distribution: parsed.options.get("distribution"),
@@ -574,6 +577,7 @@ export async function main(
           array: parsed.options.get("array"), dependency: parsed.options.get("dependency"),
           apptainer_image: parsed.options.get("apptainer-image"), venv: parsed.options.get("venv"),
           modules: parsed.repeatedOptions.get("module"),
+          artifact_inputs: parsed.repeatedOptions.get("artifact-input")?.length,
           launcher: parsed.options.get("launcher") ?? "single",
           mpi: parsed.options.get("mpi"), distribution: parsed.options.get("distribution"),
         };

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveLocalArtifactPath, resolveWorkspacePath } from "../../src/policy/path.js";
 import {
-  validateArray, validateArrayView, validateDependency, validateHistorySort, validateHistoryState,
+  validateArray, validateArrayView, validateArtifactInputs, validateDependency, validateHistorySort, validateHistoryState,
   validateHistoryWindow, validateJobId, validateJobSort, validateJobStates, validateNodeFeature,
   validateNodeState, validateQueryAccount, validateQueryName, validateQueryPartition, validateSignal,
   validateSubmit, validateUpdate,
@@ -274,6 +274,38 @@ describe("job arrays and dependencies", () => {
     expect(() => validateSubmit({ ...valid, jobName: undefined, dependency: "singleton" }, policy)).toThrow();
     expect(validateSubmit({ ...valid, array: "0-3%2", dependency: "aftercorr:123" }, policy))
       .toMatchObject({ dependency: "aftercorr:123" });
+  });
+});
+
+describe("artifact inputs", () => {
+  it("normalizes upstream artifact references and defaults the destination to the source path", () => {
+    expect(validateArtifactInputs([
+      "123:results/model.bin:model.bin", "456_7:metrics/report.json",
+    ], policy)).toEqual([
+      { jobId: "123", sourcePath: "results/model.bin", destinationPath: "model.bin" },
+      { jobId: "456_7", sourcePath: "metrics/report.json", destinationPath: "metrics/report.json" },
+    ]);
+    expect(validateSubmit({
+      ...valid, artifactInputs: ["123:results/model.bin:model.bin"],
+    }, policy).artifactInputReferences).toEqual([
+      { jobId: "123", sourcePath: "results/model.bin", destinationPath: "model.bin" },
+    ]);
+  });
+
+  it.each([
+    "", "123", "123::model.bin", "123:../secret:model.bin", "123:model.bin:/absolute",
+    "123:model.bin:bad|name", "1;id:model.bin", "123:model.bin:a:b",
+  ])("rejects unsafe artifact input %j", (reference) => {
+    expect(() => validateArtifactInputs([reference], policy)).toThrow();
+  });
+
+  it("rejects duplicate destinations and policy-exceeding counts", () => {
+    expect(() => validateArtifactInputs([
+      "123:a.bin:model.bin", "456:b.bin:model.bin",
+    ], policy)).toThrow();
+    expect(() => validateArtifactInputs(
+      ["123:a.bin", "124:b.bin"], { ...policy, maxInputFiles: 1 },
+    )).toThrowError(expect.objectContaining({ code: "RESOURCE_LIMIT_EXCEEDED" }));
   });
 });
 

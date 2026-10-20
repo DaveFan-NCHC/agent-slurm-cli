@@ -1,6 +1,13 @@
 import { invalid, policyDenied } from "../errors/errors.js";
 import type { ArrayView, HistorySort, JobSort } from "../slurm/types.js";
+import { resolveWorkspacePath } from "./path.js";
 import type { Policy } from "./types.js";
+
+export interface ArtifactInputReference {
+  jobId: string;
+  sourcePath: string;
+  destinationPath: string;
+}
 
 export interface SubmitOptions {
   script: string;
@@ -29,6 +36,7 @@ export interface SubmitOptions {
   apptainerImage?: string;
   venv?: string;
   modules?: string[];
+  artifactInputs?: string[];
   launcher?: string;
   mpi?: string;
   distribution?: string;
@@ -51,6 +59,7 @@ export interface NormalizedSubmit extends SubmitOptions {
   arrayTaskCount?: number;
   arrayConcurrency?: number;
   dependencyJobIds?: string[];
+  artifactInputReferences?: ArtifactInputReference[];
   launcher: "single" | "srun";
 }
 
@@ -317,6 +326,36 @@ export function validateDependency(value: string | undefined, policy: Policy): {
   return { value, jobIds: [...new Set(jobIds)], types: [...new Set(types)] };
 }
 
+export function validateArtifactInputs(values: string[] | undefined, policy: Policy): ArtifactInputReference[] {
+  const specifications = values ?? [];
+  if (specifications.length > policy.maxInputFiles) {
+    throw policyDenied(
+      "RESOURCE_LIMIT_EXCEEDED",
+      `artifact inputs exceed policy maximum ${policy.maxInputFiles} input files.`,
+    );
+  }
+  const references = specifications.map((specification) => {
+    const fields = specification.split(":");
+    if (fields.length < 2 || fields.length > 3 || fields.some((field) => !field)) {
+      throw invalid("--artifact-input must use JOB_ID:SOURCE_PATH[:DESTINATION_PATH].");
+    }
+    const jobId = validateJobId(fields[0]!);
+    const sourcePath = fields[1]!;
+    const destinationPath = fields[2] ?? sourcePath;
+    if (Buffer.byteLength(sourcePath) > 1024 || Buffer.byteLength(destinationPath) > 1024) {
+      throw invalid("--artifact-input paths must not exceed 1024 bytes.");
+    }
+    resolveWorkspacePath("/artifact", sourcePath);
+    resolveWorkspacePath("/input", destinationPath);
+    return { jobId, sourcePath, destinationPath };
+  });
+  const destinations = references.map((reference) => reference.destinationPath);
+  if (new Set(destinations).size !== destinations.length) {
+    throw invalid("--artifact-input destination paths must be unique.");
+  }
+  return references;
+}
+
 export function parseMemoryGb(text: string, option = "--mem"): number {
   const match = /^(\d+)([KMGTP])$/i.exec(text);
   if (!match) throw invalid(`${option} must use an integer followed by K, M, G, T, or P.`);
@@ -416,6 +455,7 @@ export function validateSubmit(options: SubmitOptions, policy: Policy): Normaliz
   }
   const array = validateArray(options.array, policy);
   const dependency = validateDependency(options.dependency, policy);
+  const artifactInputReferences = validateArtifactInputs(options.artifactInputs, policy);
   if (dependency.types?.includes("aftercorr") && !options.array) {
     throw invalid("aftercorr requires the submitted job to use --array.");
   }
@@ -521,7 +561,7 @@ export function validateSubmit(options: SubmitOptions, policy: Policy): Normaliz
     ...options, memoryGb, timeMinutes, apptainerImagePath, venvPath, moduleValues, gresValue,
     accountValue, qosValue, constraintValue, nodelistValue, excludeValue, reservationValue,
     arrayTaskCount: array.taskCount, arrayConcurrency: array.concurrency,
-    dependencyJobIds: dependency.jobIds, launcher,
+    dependencyJobIds: dependency.jobIds, artifactInputReferences, launcher,
   };
 }
 

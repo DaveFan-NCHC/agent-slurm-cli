@@ -114,6 +114,17 @@ slurm-agent submit ... --dependency afterok:12345:12346,afternotok:12347
 
 Do not invent or broaden dependency references. OR conditions, offsets, cross-user jobs, disallowed types, and reference counts above policy are unavailable. Use `aftercorr` only for a new array submission, and use `singleton` only with an explicit `--job-name`.
 
+Reuse an owned upstream artifact as a downstream input without guessing remote workspace paths:
+
+```bash
+slurm-agent submit ... \
+  --dependency afterok:12345 \
+  --artifact-input 12345:results/model.bin:models/model.bin \
+  jobs/evaluate.sh
+```
+
+The repeatable format is `JOB_ID:SOURCE_PATH[:DESTINATION_PATH]`; an omitted destination defaults to the source path. If the source path is unknown, use `artifacts JOB_ID` to list the owned job's safe relative paths first. The downstream script reads the result below `SLURM_AGENT_INPUT_DIR`, such as `$SLURM_AGENT_INPUT_DIR/models/model.bin`. Never use or construct `/workspace/.slurm-agent` paths. Artifact inputs do not add dependencies implicitly, so pair a running producer with an explicit `afterok` dependency unless the user requires different failure semantics. Use an explicit array task ID such as `12345_7` for one task's artifact. The CLI verifies ownership and safe paths at submission, then the trusted runner copies a regular non-symlink source at job start and enforces the shared `max_input_*` limits before starting the payload. Report the returned artifact-input file and job counts; do not claim that content was staged successfully until the downstream job starts.
+
 Use only policy-defined aliases for scheduler-specific account, QOS, node constraint, included/excluded node-list, and reservation selection:
 
 ```bash

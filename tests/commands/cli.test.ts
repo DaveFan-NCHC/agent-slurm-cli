@@ -75,6 +75,7 @@ describe("CLI boundary", () => {
     expect(stdout.value).toContain("slurm-agent discover cluster|modules|associations|runtimes");
     expect(stdout.value).toContain("slurm-agent artifact JOB_ID --path RELATIVE_PATH [--force]");
     expect(stdout.value).toContain("slurm-agent artifacts JOB_ID [--download [--prefix RELATIVE_DIRECTORY] [--force]]");
+    expect(stdout.value).toContain("--artifact-input REF");
     expect(stdout.value).not.toContain("slurm-agent artifact-bundle");
   });
   it.each([
@@ -277,7 +278,8 @@ require_apptainer_for_generated_scripts: false
       ]);
       const dependencyOutput = new Sink();
       expect(await main(
-        ["submit", "-p", "p", "--dependency", "afterok:77", "jobs/train.sh"],
+        ["submit", "-p", "p", "--dependency", "afterok:77",
+          "--artifact-input", "77:results/model.bin:model.bin", "jobs/train.sh"],
         {
           SLURM_SSH_HOST: "host", SLURM_SSH_USER: "alice", SLURM_SSH_KEY_PATH: join(root, "key"),
           SLURM_SSH_KNOWN_HOSTS: join(root, "known_hosts"), SLURM_REMOTE_WORKSPACE: "/work",
@@ -289,6 +291,7 @@ require_apptainer_for_generated_scripts: false
       )).toBe(0);
       expect(JSON.parse(dependencyOutput.value)).toMatchObject({
         ok: true, job_id: "12346", dependency: "afterok:77",
+        artifact_inputs: { files: 1, jobs: ["77"] },
       });
       expect(dependencyRemote.commands.at(-1)?.args).toContain("--dependency=afterok:77");
 

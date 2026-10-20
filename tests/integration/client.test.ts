@@ -142,6 +142,52 @@ describe("Slurm client security boundaries", () => {
       .toContain("SLURM_AGENT_INPUT_DIR=/work/.slurm-agent/submissions/staged/inputs");
   });
 
+  it("records owned artifact inputs for bounded runtime staging", async () => {
+    const remote = new MockExecutor([
+      ok("77|alice|prepare|slurm-test|RUNNING|00:01\n"),
+      ok("/work\n"), ok(), ok("/work/.slurm-agent/logs\n"),
+      ok("/work/.slurm-agent/artifacts\n"), ok("/work/.slurm-agent/submissions/staged\n"), ok("12345\n"),
+    ]);
+    const client = new SlurmClient(remote, "alice", "/work", policy);
+    await client.submit({
+      script: "jobs/test.sh", partition: "slurm-test", nodes: 1, ntasks: 1, cpusPerTask: 1,
+      memory: "1G", time: "00:10:00", memoryGb: 1, timeMinutes: 10,
+      dependency: "afterok:77", dependencyJobIds: ["77"], launcher: "single", scriptArgs: [],
+      artifactInputReferences: [
+        { jobId: "77", sourcePath: "results/model.bin", destinationPath: "models/model.bin" },
+      ],
+    }, prepared, {
+      files: [], totalBytes: 0, manifest: Buffer.from("{}\n"), manifestSha256: "a".repeat(64),
+    });
+
+    expect(remote.commands.filter((command) => command.executable === "squeue")).toHaveLength(1);
+    expect(remote.uploads.map((upload) => upload.label)).toEqual([
+      "payload", "artifact-input-manifest", "runner",
+    ]);
+    expect(remote.uploads[1]?.content.toString()).toBe("77|results/model.bin|models/model.bin\n");
+    const exported = remote.commands.at(-1)?.args.find((argument) => argument.startsWith("--export="));
+    expect(exported).toContain("SLURM_AGENT_ARTIFACT_INPUT_MANIFEST=/work/.slurm-agent/submissions/staged/artifact-input-manifest");
+    expect(exported).toContain(`SLURM_AGENT_MAX_INPUT_FILE_BYTES=${policy.maxInputFileBytes}`);
+    expect(exported).toContain(`SLURM_AGENT_MAX_INPUT_TOTAL_BYTES=${policy.maxInputTotalBytes}`);
+  });
+
+  it("rejects local and artifact inputs that target the same path", async () => {
+    const remote = new MockExecutor([]);
+    const client = new SlurmClient(remote, "alice", "/work", policy);
+    await expect(client.submit({
+      script: "jobs/test.sh", partition: "slurm-test", nodes: 1, ntasks: 1, cpusPerTask: 1,
+      memory: "1G", time: "00:10:00", memoryGb: 1, timeMinutes: 10,
+      launcher: "single", scriptArgs: [],
+      artifactInputReferences: [
+        { jobId: "77", sourcePath: "results/model.bin", destinationPath: "model.bin" },
+      ],
+    }, prepared, {
+      files: [{ content: Buffer.from("local"), relativePath: "model.bin", bytes: 5, sha256: "a".repeat(64) }],
+      totalBytes: 5, manifest: Buffer.from("{}\n"), manifestSha256: "b".repeat(64),
+    })).rejects.toThrowError(expect.objectContaining({ code: "INPUT_INVALID" }));
+    expect(remote.commands).toHaveLength(0);
+  });
+
   it("never submits a job after a partial input upload", async () => {
     const remote = new FailingInputExecutor([
       ok("/work\n"), ok(), ok("/work/.slurm-agent/logs\n"),
@@ -300,6 +346,19 @@ describe("Slurm client security boundaries", () => {
       script: "jobs/test.sh", partition: "slurm-test", nodes: 1, ntasks: 1, cpusPerTask: 1,
       memory: "1G", time: "00:10:00", memoryGb: 1, timeMinutes: 10,
       dependency: "afterok:77", dependencyJobIds: ["77"], scriptArgs: [],
+    }, prepared)).rejects.toMatchObject({ code: "JOB_NOT_OWNED_BY_USER" });
+    expect(remote.commands.some((command) => command.executable === "sbatch")).toBe(false);
+  });
+
+  it("rejects an artifact input from another user's job before submission", async () => {
+    const remote = new MockExecutor([ok("77|bob|prepare|slurm-test|RUNNING|00:01\n")]);
+    const client = new SlurmClient(remote, "alice", "/work", policy);
+    await expect(client.submit({
+      script: "jobs/test.sh", partition: "slurm-test", nodes: 1, ntasks: 1, cpusPerTask: 1,
+      memory: "1G", time: "00:10:00", memoryGb: 1, timeMinutes: 10, scriptArgs: [],
+      artifactInputReferences: [
+        { jobId: "77", sourcePath: "results/model.bin", destinationPath: "model.bin" },
+      ],
     }, prepared)).rejects.toMatchObject({ code: "JOB_NOT_OWNED_BY_USER" });
     expect(remote.commands.some((command) => command.executable === "sbatch")).toBe(false);
   });

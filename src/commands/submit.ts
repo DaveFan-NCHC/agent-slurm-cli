@@ -9,6 +9,8 @@ export async function runSubmit(
   script: PreparedScript,
   inputs: PreparedInputBundle,
 ): Promise<Record<string, unknown>> {
+  const artifactInputs = options.artifactInputReferences ?? [];
+  const artifactInputJobs = [...new Set(artifactInputs.map((input) => input.jobId))];
   const resources = {
     partition: options.partition, nodes: options.nodes, ntasks: options.ntasks,
     ntasks_per_node: options.ntasksPerNode, cpus_per_task: options.cpusPerTask,
@@ -31,6 +33,9 @@ export async function runSubmit(
         manifest_sha256: inputs.manifestSha256,
       },
     } : {}),
+    ...(artifactInputs.length > 0 ? {
+      artifact_inputs: { files: artifactInputs.length, jobs: artifactInputJobs },
+    } : {}),
   };
   const jobId = await context.client.submit(options, script, inputs);
   context.audit.write({ action: "submit", ssh_user: context.sshUser, job_id: jobId, resources, policy_decision: "allowed", result: "success", remote_exit_code: 0 });
@@ -52,6 +57,9 @@ export async function runSubmit(
         bytes: inputs.totalBytes,
         manifest_sha256: inputs.manifestSha256,
       },
+    } : {}),
+    ...(artifactInputs.length > 0 ? {
+      artifact_inputs: { files: artifactInputs.length, jobs: artifactInputJobs },
     } : {}),
   };
 }

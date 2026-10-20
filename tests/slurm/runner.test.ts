@@ -28,6 +28,48 @@ describe("trusted submission runner", () => {
     expect(TRUSTED_RUNNER).toContain('job_artifact_dir="${SLURM_AGENT_ARTIFACT_ROOT}/${artifact_job_id}"');
   });
 
+  it("stages a validated upstream artifact into the downstream input directory", () => {
+    const root = mkdtempSync(join(tmpdir(), "slurm-agent-artifact-input-"));
+    try {
+      const artifacts = join(root, "artifacts");
+      const inputs = join(root, "inputs");
+      const runner = join(root, "runner");
+      const payload = join(root, "payload");
+      const manifest = join(root, "artifact-input-manifest");
+      mkdirSync(join(artifacts, "77", "results"), { recursive: true });
+      mkdirSync(inputs);
+      writeFileSync(join(artifacts, "77", "results", "model.bin"), "trained-model");
+      writeFileSync(manifest, "77|results/model.bin|models/model.bin\n");
+      writeFileSync(runner, TRUSTED_RUNNER);
+      writeFileSync(payload, `#!/bin/sh\nset -eu\ncat "$SLURM_AGENT_INPUT_DIR/models/model.bin" > "$SLURM_AGENT_ARTIFACT_DIR/result"\n`);
+      chmodSync(runner, 0o700);
+      chmodSync(payload, 0o700);
+
+      const result = spawnSync(runner, [], {
+        cwd: root,
+        env: {
+          ...process.env,
+          SLURM_JOB_ID: "88",
+          SLURM_AGENT_PAYLOAD: payload,
+          SLURM_AGENT_ARTIFACT_ROOT: artifacts,
+          SLURM_AGENT_RUNTIME_KIND: "host",
+          SLURM_AGENT_INPUT_DIR: inputs,
+          SLURM_AGENT_LAUNCHER: "single",
+          SLURM_AGENT_ARTIFACT_INPUT_MANIFEST: manifest,
+          SLURM_AGENT_STAGED_INPUT_BYTES: "0",
+          SLURM_AGENT_MAX_INPUT_FILE_BYTES: "1024",
+          SLURM_AGENT_MAX_INPUT_TOTAL_BYTES: "2048",
+        },
+        encoding: "utf8",
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(readFileSync(join(inputs, "models", "model.bin"), "utf8")).toBe("trained-model");
+      expect(readFileSync(join(artifacts, "88", "result"), "utf8")).toBe("trained-model");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("launches a fixed srun step and propagates validated placement", () => {
     expect(TRUSTED_RUNNER).toContain('exec "${SLURM_AGENT_SRUN_EXECUTABLE}" "$@"');
     expect(TRUSTED_RUNNER).toContain('"--nodes=${SLURM_AGENT_NODES}"');

@@ -65,6 +65,33 @@ function matchesJobReference(reference: string, candidate: string): boolean {
   return candidate === reference || (!reference.includes("_") && candidate.startsWith(`${reference}_`));
 }
 
+function assertDistinctInputDestinations(paths: string[]): void {
+  for (let left = 0; left < paths.length; left += 1) {
+    for (let right = left + 1; right < paths.length; right += 1) {
+      const first = paths[left]!;
+      const second = paths[right]!;
+      if (first === second || first.startsWith(`${second}/`) || second.startsWith(`${first}/`)) {
+        throw new AgentError(
+          "INPUT_INVALID",
+          `Input destination ${first} conflicts with another input path.`,
+          ExitCode.InvalidArguments,
+        );
+      }
+    }
+  }
+}
+
+function assertSafeArtifactInputs(inputs: NonNullable<NormalizedSubmit["artifactInputReferences"]>): void {
+  for (const input of inputs) {
+    if (!/^[1-9]\d*(?:_\d+)?$/.test(input.jobId) ||
+        Buffer.byteLength(input.sourcePath) > 1024 || Buffer.byteLength(input.destinationPath) > 1024) {
+      throw new AgentError("INPUT_INVALID", "Artifact input reference is invalid.", ExitCode.InvalidArguments);
+    }
+    resolveWorkspacePath("/artifact", input.sourcePath);
+    resolveWorkspacePath("/input", input.destinationPath);
+  }
+}
+
 export class SlurmClient {
   constructor(
     private readonly executor: RemoteExecutor,
@@ -393,11 +420,29 @@ export class SlurmClient {
     inputs?: PreparedInputBundle,
   ): Promise<string> {
     const launcher = options.launcher ?? "single";
+    const artifactInputs = options.artifactInputReferences ?? [];
+    const localInputs = inputs?.files ?? [];
+    assertSafeArtifactInputs(artifactInputs);
+    if (localInputs.length + artifactInputs.length > this.policy.maxInputFiles) {
+      throw new AgentError(
+        "INPUT_BUNDLE_TOO_LARGE",
+        `Combined inputs exceed policy maximum ${this.policy.maxInputFiles} files.`,
+        ExitCode.PolicyDenied,
+      );
+    }
+    assertDistinctInputDestinations([
+      ...localInputs.map((input) => input.relativePath),
+      ...artifactInputs.map((input) => input.destinationPath),
+    ]);
     if (this.policy.requireApptainerForGeneratedScripts && !options.apptainerImagePath) {
       throw new AgentError("RUNTIME_REQUIRED", "Policy requires an approved Apptainer image for agent-generated scripts.", ExitCode.PolicyDenied);
     }
-    for (const dependencyJobId of options.dependencyJobIds ?? []) {
-      await this.assertOwnedJobReference(dependencyJobId);
+    const referencedJobIds = new Set([
+      ...(options.dependencyJobIds ?? []),
+      ...artifactInputs.map((input) => input.jobId),
+    ]);
+    for (const referencedJobId of referencedJobIds) {
+      await this.assertOwnedJobReference(referencedJobId);
     }
     const workspaceReal = await this.workspaceRealpath();
     const apptainerImageReal = options.apptainerImagePath
@@ -448,7 +493,7 @@ export class SlurmClient {
     const submissionDirectory = `${workspaceReal}/.slurm-agent/submissions/${randomUUID()}`;
     const inputDirectory = `${submissionDirectory}/inputs`;
     const inputDirectories = new Set([inputDirectory]);
-    for (const input of inputs?.files ?? []) {
+    for (const input of [...localInputs, ...artifactInputs.map((input) => ({ relativePath: input.destinationPath }))]) {
       let parent = posix.dirname(input.relativePath);
       while (parent !== ".") {
         inputDirectories.add(`${inputDirectory}/${parent}`);
@@ -497,6 +542,21 @@ export class SlurmClient {
         label: "manifest",
       });
     }
+    const artifactInputManifestPath = `${submissionDirectoryReal}/artifact-input-manifest`;
+    if (artifactInputs.length > 0) {
+      const artifactInputManifest = Buffer.from(
+        `${artifactInputs.map((input) =>
+          `${input.jobId}|${input.sourcePath}|${input.destinationPath}`).join("\n")}\n`,
+        "utf8",
+      );
+      await this.executor.uploadSubmission({
+        content: artifactInputManifest,
+        remotePath: artifactInputManifestPath,
+        maxBytes: artifactInputManifest.length,
+        mode: 0o600,
+        label: "artifact-input-manifest",
+      });
+    }
     const runner = Buffer.from(TRUSTED_RUNNER, "utf8");
     await this.executor.uploadSubmission({
       content: runner, remotePath: runnerPath, maxBytes: runner.length, mode: 0o700, label: "runner",
@@ -509,6 +569,12 @@ export class SlurmClient {
     exportedEnvironment.push(`SLURM_AGENT_NODES=${options.nodes}`);
     exportedEnvironment.push(`SLURM_AGENT_NTASKS=${options.ntasks}`);
     exportedEnvironment.push(`SLURM_AGENT_CPUS_PER_TASK=${options.cpusPerTask}`);
+    if (artifactInputs.length > 0) {
+      exportedEnvironment.push(`SLURM_AGENT_ARTIFACT_INPUT_MANIFEST=${artifactInputManifestPath}`);
+      exportedEnvironment.push(`SLURM_AGENT_STAGED_INPUT_BYTES=${inputs?.totalBytes ?? 0}`);
+      exportedEnvironment.push(`SLURM_AGENT_MAX_INPUT_FILE_BYTES=${this.policy.maxInputFileBytes}`);
+      exportedEnvironment.push(`SLURM_AGENT_MAX_INPUT_TOTAL_BYTES=${this.policy.maxInputTotalBytes}`);
+    }
     if (options.ntasksPerNode !== undefined) {
       exportedEnvironment.push(`SLURM_AGENT_NTASKS_PER_NODE=${options.ntasksPerNode}`);
     }

@@ -21,6 +21,69 @@ fi
 job_artifact_dir="\${SLURM_AGENT_ARTIFACT_ROOT}/\${artifact_job_id}"
 /bin/mkdir -p -m 700 "\${job_artifact_dir}"
 
+if [ "\${task_mode}" = 0 ] && [ -n "\${SLURM_AGENT_ARTIFACT_INPUT_MANIFEST:-}" ]; then
+  : "\${SLURM_AGENT_MAX_INPUT_FILE_BYTES:?}"
+  : "\${SLURM_AGENT_MAX_INPUT_TOTAL_BYTES:?}"
+  artifact_input_total="\${SLURM_AGENT_STAGED_INPUT_BYTES:-0}"
+  case "\${SLURM_AGENT_MAX_INPUT_FILE_BYTES}:\${SLURM_AGENT_MAX_INPUT_TOTAL_BYTES}:\${artifact_input_total}" in
+    *[!0-9:]*) exit 64 ;;
+  esac
+  input_root_real="$(realpath -e -- "\${SLURM_AGENT_INPUT_DIR}")" || exit 66
+  manifest_real="$(realpath -e -- "\${SLURM_AGENT_ARTIFACT_INPUT_MANIFEST}")" || exit 66
+  if [ "\${manifest_real}" != "\${SLURM_AGENT_ARTIFACT_INPUT_MANIFEST}" ] || [ ! -f "\${manifest_real}" ]; then
+    exit 66
+  fi
+  while IFS='|' read -r source_job_id source_relative destination_relative extra; do
+    if [ -n "\${extra}" ] ||
+       ! [[ "\${source_job_id}" =~ ^[1-9][0-9]*(_[0-9]+)?$ ]] ||
+       ! [[ "\${source_relative}" =~ ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$ ]] ||
+       ! [[ "\${destination_relative}" =~ ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$ ]]; then
+      exit 64
+    fi
+    case "/\${source_relative}/:/\${destination_relative}/" in
+      */./*|*/../*) exit 64 ;;
+    esac
+    source_path="\${SLURM_AGENT_ARTIFACT_ROOT}/\${source_job_id}/\${source_relative}"
+    source_real="$(realpath -e -- "\${source_path}")" || {
+      echo "Artifact input is unavailable: \${source_job_id}:\${source_relative}" >&2
+      exit 66
+    }
+    if [ "\${source_real}" != "\${source_path}" ] || [ ! -f "\${source_real}" ]; then
+      echo "Artifact input is not a safe regular file: \${source_job_id}:\${source_relative}" >&2
+      exit 66
+    fi
+    source_bytes="$(wc -c < "\${source_real}")" || exit 66
+    case "\${source_bytes}" in *[!0-9]*) exit 66 ;; esac
+    artifact_input_total=$((artifact_input_total + source_bytes))
+    if [ "\${source_bytes}" -gt "\${SLURM_AGENT_MAX_INPUT_FILE_BYTES}" ] ||
+       [ "\${artifact_input_total}" -gt "\${SLURM_AGENT_MAX_INPUT_TOTAL_BYTES}" ]; then
+      echo "Artifact input exceeds the configured input limit: \${source_job_id}:\${source_relative}" >&2
+      exit 66
+    fi
+    destination="\${SLURM_AGENT_INPUT_DIR}/\${destination_relative}"
+    destination_parent="\${destination%/*}"
+    /bin/mkdir -p -m 700 -- "\${destination_parent}"
+    destination_parent_real="$(realpath -e -- "\${destination_parent}")" || exit 66
+    case "\${destination_parent_real}/" in
+      "\${input_root_real}/"*) ;;
+      *) exit 66 ;;
+    esac
+    if [ -d "\${destination}" ] || [ -L "\${destination}" ]; then exit 66; fi
+    temporary="\${destination}.slurm-agent-tmp.\${artifact_job_id}.$$"
+    /bin/rm -f -- "\${temporary}"
+    if ! /bin/cp -- "\${source_real}" "\${temporary}"; then
+      /bin/rm -f -- "\${temporary}"
+      exit 66
+    fi
+    copied_bytes="$(wc -c < "\${temporary}")" || exit 66
+    if [ "\${copied_bytes}" != "\${source_bytes}" ]; then
+      /bin/rm -f -- "\${temporary}"
+      exit 66
+    fi
+    /bin/mv -f -- "\${temporary}" "\${destination}"
+  done < "\${manifest_real}"
+fi
+
 case "\${SLURM_AGENT_LAUNCHER}:\${task_mode}" in
   single:0)
     ;;
