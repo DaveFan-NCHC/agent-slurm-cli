@@ -43,7 +43,7 @@ import { closeSession, inspectSession, openSession } from "./session/manager.js"
 import { runSessionWorker } from "./session/worker.js";
 import type { RemoteExecutor } from "./transport/types.js";
 
-const VERSION = "0.10.1";
+const VERSION = "0.11.0";
 const HELP = `slurm-agent ${VERSION}
 
 Usage:
