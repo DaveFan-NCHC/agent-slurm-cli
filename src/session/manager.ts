@@ -10,6 +10,21 @@ function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+export interface SessionManagerDependencies {
+  delay?: (milliseconds: number) => Promise<void>;
+  now?: () => number;
+  startWorker?: (cliModulePath: string, environment: NodeJS.ProcessEnv) => void;
+}
+
+function startWorker(cliModulePath: string, environment: NodeJS.ProcessEnv): void {
+  const child = spawn(process.execPath, [cliModulePath, "__session-worker"], {
+    detached: true,
+    env: environment,
+    stdio: "ignore",
+  });
+  child.unref();
+}
+
 async function statusFor(config: SshConfig): Promise<SessionStatus | undefined> {
   const paths = sessionPaths(config);
   const metadata = readSessionMetadata(paths.metadata);
@@ -26,6 +41,7 @@ export async function openSession(
   config: SshConfig,
   cliModulePath: string,
   workerEnvironment: NodeJS.ProcessEnv = process.env,
+  dependencies: SessionManagerDependencies = {},
 ): Promise<Record<string, unknown>> {
   const paths = sessionPaths(config);
   ensureSessionDirectory(paths.directory);
@@ -54,19 +70,19 @@ export async function openSession(
   }
   if (!metadata) removeSessionFiles(paths);
 
-  const child = spawn(process.execPath, [cliModulePath, "__session-worker"], {
-    detached: true,
-    env: { ...workerEnvironment, SLURM_AGENT_INTERNAL_SESSION_WORKER: "1" },
-    stdio: "ignore",
+  (dependencies.startWorker ?? startWorker)(cliModulePath, {
+    ...workerEnvironment,
+    SLURM_AGENT_INTERNAL_SESSION_WORKER: "1",
   });
-  child.unref();
 
-  const startupDeadline = Date.now() + 5000;
+  const now = dependencies.now ?? Date.now;
+  const wait = dependencies.delay ?? delay;
+  const startupDeadline = now() + 5000;
   do {
-    await delay(25);
+    await wait(25);
     metadata = readSessionMetadata(paths.metadata);
     if (metadata) break;
-  } while (Date.now() < startupDeadline);
+  } while (now() < startupDeadline);
   if (!metadata) {
     throw new AgentError(
       "SESSION_LOST",

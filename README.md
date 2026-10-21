@@ -524,10 +524,12 @@ npm run build
 
 Coverage reports are written to `coverage/`. The coverage run enforces minimum
 project-wide thresholds of 80% for statements, functions, and lines, and 75%
-for branches. Open `coverage/index.html` for the detailed local report.
+for branches. Additional area thresholds protect the policy, session, Slurm,
+and transport security boundaries from being hidden by the project-wide total.
+Open `coverage/index.html` for the detailed local report.
 
 ## GitLab CI
 
 [`.gitlab-ci.yml`](.gitlab-ci.yml) runs for branches, tags, and merge requests. Linting, type checking, and coverage-enforced tests run in parallel on Node.js 22; GitLab receives a Cobertura coverage report, and the package job starts only after all three pass and retains `dist/` plus the npm tarball for seven days.
 
-Tests cover traversal, absolute paths, remote/local symlink escape, shell metacharacters/control characters, unexpected commands, Slurm argument injection, resource limits, partition denial, ownership denial, fixed log/artifact paths, parsers, and output construction. Integration tests use a typed mock transport and do not require a live cluster.
+Tests cover traversal, absolute paths, remote/local symlink escape, shell metacharacters/control characters, unexpected commands, Slurm argument injection, resource limits, partition denial, ownership denial, fixed log/artifact paths, parsers, and output construction. Component tests use typed transports from `tests/support`; persistent-session tests also exercise a real child process and Unix socket. No live cluster is required.

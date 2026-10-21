@@ -2,33 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   DiscoveryClient, parseAssociations, parseDiscoveryNodes, parseModuleCatalog, parseReservations,
 } from "../../src/discovery/client.js";
-import type {
-  ArtifactDownload, RemoteExecutor, RemoteResult, SafeArtifactBundleTransfer, SafeArtifactTransfer,
-  SafeCommand, SafeSubmissionUpload,
-} from "../../src/transport/types.js";
-
-class MockExecutor implements RemoteExecutor {
-  readonly commands: SafeCommand[] = [];
-  constructor(private readonly results: RemoteResult[]) {}
-  async run(command: SafeCommand): Promise<RemoteResult> {
-    this.commands.push(command);
-    const result = this.results.shift();
-    if (!result) throw new Error("Missing mock result");
-    return result;
-  }
-  async downloadArtifact(_transfer: SafeArtifactTransfer): Promise<ArtifactDownload> {
-    throw new Error("not used");
-  }
-  async downloadArtifactBundle(_transfer: SafeArtifactBundleTransfer): Promise<ArtifactDownload> {
-    throw new Error("not used");
-  }
-  async uploadSubmission(_upload: SafeSubmissionUpload): Promise<{ bytes: number }> {
-    throw new Error("not used");
-  }
-  async close(): Promise<void> {}
-}
-
-const ok = (stdout = "", stderr = ""): RemoteResult => ({ stdout, stderr, exitCode: 0 });
+import { MockRemoteExecutor, ok } from "../support/slurm.js";
 
 describe("HPC discovery", () => {
   it("parses a terse module catalog and removes presentation markers", () => {
@@ -64,7 +38,7 @@ describe("HPC discovery", () => {
 
   it("discovers all Slurm-visible partitions and nodes without policy filters", async () => {
     const node = ["gpu01", "gpu*", "idle", "64", "515000", "gpu:h200:8", "zen4,h200"].join("|");
-    const remote = new MockExecutor([
+    const remote = new MockRemoteExecutor([
       ok("gpu*|up|1-00:00:00|1|idle|0/64/0/64|gpu:h200:8\n"),
       ok(`${node}\n`),
     ]);
@@ -104,7 +78,7 @@ describe("HPC discovery", () => {
   });
 
   it("discovers the live module catalog through the configured modulecmd", async () => {
-    const remote = new MockExecutor([
+    const remote = new MockRemoteExecutor([
       ok("/opt/lmod/libexec/lmod\n"), ok(),
       ok("", "/module/path:\ngcc/12.2.0 (D)\ncuda/12.1\n"),
     ]);
@@ -120,7 +94,7 @@ describe("HPC discovery", () => {
   });
 
   it("returns partial association discovery with warnings when optional data is unavailable", async () => {
-    const remote = new MockExecutor([
+    const remote = new MockRemoteExecutor([
       ok("research|gpu|normal,debug|normal|\n"),
       { stdout: "", stderr: "permission denied", exitCode: 1 },
     ]);
@@ -135,7 +109,7 @@ describe("HPC discovery", () => {
   });
 
   it("reports configured runtime availability without policy", async () => {
-    const remote = new MockExecutor([
+    const remote = new MockRemoteExecutor([
       ok("/usr/bin/apptainer\n"), ok(),
       { stdout: "", stderr: "", exitCode: 1 },
       ok("/usr/bin/modulecmd\n"), { stdout: "", stderr: "", exitCode: 1 },

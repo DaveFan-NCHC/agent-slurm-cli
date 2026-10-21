@@ -5,7 +5,8 @@ import { loadConfig } from "../config/loader.js";
 import { AgentError, ExitCode } from "../errors/errors.js";
 import { SshExecutor } from "../transport/ssh.js";
 import type {
-  SafeArtifactBundleTransfer, SafeArtifactTransfer, SafeCommand, SafeSubmissionUpload,
+  ArtifactDownload, RemoteExecutor, RemoteResult, SafeArtifactBundleTransfer,
+  SafeArtifactTransfer, SafeCommand, SafeSubmissionUpload,
 } from "../transport/types.js";
 import {
   ensureSessionDirectory, readSessionMetadata, removeSessionFiles, sessionPaths, type SessionMetadata,
@@ -21,6 +22,21 @@ interface WorkerRequest {
   command?: SafeCommand;
   transfer?: SafeArtifactTransfer | SafeArtifactBundleTransfer;
   upload?: Omit<SafeSubmissionUpload, "content">;
+}
+
+export interface SessionWorkerExecutor extends RemoteExecutor {
+  connectionStatus(): { command: boolean; transfer: boolean | "shared" };
+  isConnected(): boolean;
+  open(): Promise<void>;
+  preventReconnect(): void;
+  run(command: SafeCommand): Promise<RemoteResult>;
+  downloadArtifact(transfer: SafeArtifactTransfer): Promise<ArtifactDownload>;
+  downloadArtifactBundle(transfer: SafeArtifactBundleTransfer): Promise<ArtifactDownload>;
+  uploadSubmission(upload: SafeSubmissionUpload): Promise<{ bytes: number }>;
+}
+
+export interface SessionWorkerDependencies {
+  createExecutor?: (config: ReturnType<typeof loadConfig>["ssh"]) => SessionWorkerExecutor;
 }
 
 function serializeError(cause: unknown): Record<string, unknown> {
@@ -39,7 +55,7 @@ function writeResponse(socket: Socket, response: Record<string, unknown>): void 
   socket.end(`${JSON.stringify(response)}\n`);
 }
 
-export async function runSessionWorker(): Promise<void> {
+export async function runSessionWorker(dependencies: SessionWorkerDependencies = {}): Promise<void> {
   const config = loadConfig(process.env);
   const paths = sessionPaths(config.ssh);
   ensureSessionDirectory(paths.directory);
@@ -50,7 +66,7 @@ export async function runSessionWorker(): Promise<void> {
   let shuttingDown = false;
   let expiryTimer: NodeJS.Timeout | undefined;
   let operationQueue: Promise<void> = Promise.resolve();
-  const executor = new SshExecutor(config.ssh);
+  const executor = dependencies.createExecutor?.(config.ssh) ?? new SshExecutor(config.ssh);
 
   const status = (): Record<string, unknown> => {
     const connections = executor.connectionStatus();

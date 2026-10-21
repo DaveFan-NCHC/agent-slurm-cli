@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { SessionRemoteExecutor } from "../../src/session/client.js";
 import { ensureSessionDirectory, readSessionMetadata, sessionPaths } from "../../src/session/paths.js";
-import type { SshConfig } from "../../src/config/loader.js";
+import { sessionConfig } from "../support/session.js";
 
 const roots: string[] = [];
 
@@ -13,32 +13,15 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-function sshConfig(directory: string, host = "login.example"): SshConfig {
-  return {
-    host,
-    port: 22,
-    user: "alice",
-    authentication: { type: "password", password: "not-part-of-session-key" },
-    hostFingerprint: "SHA256:test",
-    readyTimeoutMs: 30000,
-    pushAuthentication: false,
-    workspace: "/work",
-    timeoutMs: 30000,
-    sessionDirectory: directory,
-    sessionIdleTimeoutMs: 1800000,
-    sessionMaxLifetimeMs: 28800000,
-  };
-}
-
 describe("persistent session paths", () => {
   it("derives one socket per connection identity without including the password", () => {
     const root = mkdtempSync(join(tmpdir(), "slurm-agent-session-path-"));
     roots.push(root);
-    const first = sessionPaths(sshConfig(root));
-    const changedPassword = sshConfig(root);
+    const first = sessionPaths(sessionConfig(root));
+    const changedPassword = sessionConfig(root);
     changedPassword.authentication = { type: "password", password: "changed" };
     expect(sessionPaths(changedPassword).socket).toBe(first.socket);
-    expect(sessionPaths(sshConfig(root, "other.example")).socket).not.toBe(first.socket);
+    expect(sessionPaths(sessionConfig(root, "other.example")).socket).not.toBe(first.socket);
   });
 
   it("requires owner-only session directory and metadata", () => {

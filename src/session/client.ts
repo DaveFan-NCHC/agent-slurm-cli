@@ -168,10 +168,15 @@ export async function activeSessionExecutor(config: SshConfig): Promise<SessionR
 export class PreferredRemoteExecutor implements RemoteExecutor {
   private selected?: Promise<RemoteExecutor>;
 
-  constructor(private readonly config: SshConfig) {}
+  constructor(
+    private readonly config: SshConfig,
+    private readonly fallbackFactory: (config: SshConfig) => RemoteExecutor = (value) => new SshExecutor(value),
+  ) {}
 
   private executor(): Promise<RemoteExecutor> {
-    this.selected ??= activeSessionExecutor(this.config).then((session) => session ?? new SshExecutor(this.config));
+    this.selected ??= activeSessionExecutor(this.config).then(
+      (session) => session ?? this.fallbackFactory(this.config),
+    );
     return this.selected;
   }
 
