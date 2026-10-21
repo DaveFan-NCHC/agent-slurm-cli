@@ -38,6 +38,7 @@ function fakeSlurmScript(root: string, user: string): string {
   const workspace = join(root, "remote-workspace");
   const calls = join(root, "slurm-calls.tsv");
   const mode = join(root, "slurm-mode");
+  const transitionCount = join(root, "slurm-transition-count");
   return `#!/bin/sh
 set -eu
 name="$(basename "$0")"
@@ -62,10 +63,20 @@ case "$name" in
     fi
     owner=${shellQuote(user)}
     if [ "$mode" = foreign ]; then owner=mallory; fi
+    if [ "$mode" = completed ]; then exit 0; fi
+    if [ "$mode" = transition ]; then
+      count="$(cat ${shellQuote(transitionCount)} 2>/dev/null || printf '0')"
+      if [ "$count" -gt 0 ]; then exit 0; fi
+      printf '1\n' > ${shellQuote(transitionCount)}
+    fi
     printf '12345|%s|integration|test|RUNNING|00:01|None|100|2026-10-21T00:00:00|2026-10-20T23:59:00|00:10:00|00:09:00|node01|1|1|research|normal|None\n' "$owner"
     ;;
   sacct)
-    printf '12345|${user}|integration|test|COMPLETED|00:01|0:0\n'
+    case " $* " in
+      *"ElapsedRaw"*) printf '12345|${user}|integration|test|RUNNING|00:01|60|1|1|1G|cpu=1,mem=1G|cpu=1,mem=1G|00:00:30|1M|2M|0|0|0:0\n' ;;
+      *"Start,End"*) printf '12345|${user}|integration|test|COMPLETED|00:01|2026-10-21T00:00:00|2026-10-21T00:01:00|0:0|1|1|1G|cpu=1,mem=1G\n' ;;
+      *) printf '12345|${user}|integration|test|COMPLETED|00:01|0:0\n' ;;
+    esac
     ;;
   sinfo)
     case " $* " in
@@ -288,8 +299,9 @@ export class SshTestCluster {
     return { status: result.status, stdout: result.stdout, stderr, json };
   }
 
-  setMode(mode: "normal" | "foreign" | "malformed"): void {
+  setMode(mode: "normal" | "foreign" | "malformed" | "completed" | "transition"): void {
     writeFileSync(join(this.root, "slurm-mode"), `${mode}\n`);
+    rmSync(join(this.root, "slurm-transition-count"), { force: true });
   }
 
   calls(): string[] {
