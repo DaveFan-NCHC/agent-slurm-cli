@@ -51,7 +51,7 @@ class MockExecutor implements RemoteExecutor {
     return { bytes: 11, sha256: "b".repeat(64), overwritten: transfer.overwrite === true };
   }
   async uploadSubmission(upload: SafeSubmissionUpload): Promise<{ bytes: number }> {
-    const { remotePath, content } = upload;
+    const { content } = upload;
     this.uploads.push(upload);
     return { bytes: content.length };
   }

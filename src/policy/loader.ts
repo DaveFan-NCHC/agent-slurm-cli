@@ -153,7 +153,7 @@ function nodelistMap(value: unknown, key: string): Record<string, string> {
       throw new AgentError("CONFIGURATION_ERROR", `${key} contains an invalid alias.`, ExitCode.General);
     }
     if (typeof nodelist !== "string" || nodelist.length > 256 ||
-        !/^[A-Za-z0-9][A-Za-z0-9_.\[\],-]*$/.test(nodelist)) {
+        !/^[A-Za-z0-9][A-Za-z0-9_.[\],-]*$/.test(nodelist)) {
       throw new AgentError("CONFIGURATION_ERROR", `${key}.${alias} must be a safe Slurm node list.`, ExitCode.General);
     }
     result[alias] = nodelist;

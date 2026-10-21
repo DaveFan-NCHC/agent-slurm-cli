@@ -560,7 +560,7 @@ export async function main(
         response = await runLogs(context, jobId, stream, lines);
         break;
       }
-      case "submit":
+      case "submit": {
         auditResources = {
           partition: parsed.options.get("partition"), nodes: parsed.options.get("nodes") ?? "1",
           ntasks: parsed.options.get("ntasks") ?? "1", cpus_per_task: parsed.options.get("cpus-per-task") ?? "1",
@@ -595,6 +595,7 @@ export async function main(
         }
         response = await runSubmit(context, submitOptions, preparedScript, preparedInputs);
         break;
+      }
       case "artifact": {
         jobId = validateJobId(parsed.positionals[0]!);
         const path = requiredOption(parsed.options, "path");

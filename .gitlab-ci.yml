@@ -27,14 +27,30 @@ typecheck:
   script:
     - npm run typecheck
 
+lint:
+  stage: test
+  script:
+    - npm run lint
+
 test:
   stage: test
   script:
-    - npm test
+    - npm run test:coverage
+  coverage: '/All files[^|]*\|[^|]*\s+([\d.]+)/'
+  artifacts:
+    when: always
+    expire_in: 7 days
+    paths:
+      - coverage/
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage/cobertura-coverage.xml
 
 package:
   stage: build
   needs:
+    - lint
     - typecheck
     - test
   script:

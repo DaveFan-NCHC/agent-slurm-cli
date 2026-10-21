@@ -41,6 +41,7 @@ Node.js 20 or newer is required to build and run the package.
 npm ci
 npm run build
 npm test
+npm run test:coverage
 npm install -g .
 slurm-agent --version
 ```
@@ -485,13 +486,19 @@ If a remote Slurm command fails, the error object also includes a sanitized `slu
 ## Development
 
 ```bash
+npm run lint
 npm run typecheck
 npm test
+npm run test:coverage
 npm run build
 ```
 
+Coverage reports are written to `coverage/`. The coverage run enforces minimum
+project-wide thresholds of 80% for statements, functions, and lines, and 75%
+for branches. Open `coverage/index.html` for the detailed local report.
+
 ## GitLab CI
 
-[`.gitlab-ci.yml`](.gitlab-ci.yml) runs for branches, tags, and merge requests. Type checking and tests run in parallel on Node.js 22; the package job starts only after both pass and retains `dist/` plus the npm tarball for seven days.
+[`.gitlab-ci.yml`](.gitlab-ci.yml) runs for branches, tags, and merge requests. Linting, type checking, and coverage-enforced tests run in parallel on Node.js 22; GitLab receives a Cobertura coverage report, and the package job starts only after all three pass and retains `dist/` plus the npm tarball for seven days.
 
 Tests cover traversal, absolute paths, remote/local symlink escape, shell metacharacters/control characters, unexpected commands, Slurm argument injection, resource limits, partition denial, ownership denial, fixed log/artifact paths, parsers, and output construction. Integration tests use a typed mock transport and do not require a live cluster.
