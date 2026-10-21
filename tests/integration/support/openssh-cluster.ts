@@ -4,7 +4,7 @@ import {
   rmSync, symlinkSync, writeFileSync,
 } from "node:fs";
 import { createServer } from "node:net";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
 
 export interface CliExecution {
@@ -173,12 +173,13 @@ export class OpenSshCluster {
     port: number;
     fingerprint: string;
     sshd: ChildProcess;
+    user: string;
   }) {
     this.root = options.root;
     this.port = options.port;
     this.fingerprint = options.fingerprint;
     this.sshd = options.sshd;
-    this.user = process.env.USER || process.env.LOGNAME || "ubuntu";
+    this.user = options.user;
     this.workspace = join(this.root, "remote-workspace");
     this.localWorkspace = join(this.root, "local-workspace");
     this.localArtifacts = join(this.root, "local-artifacts");
@@ -210,7 +211,7 @@ export class OpenSshCluster {
     const sshdPath = process.env.SLURM_TEST_SSHD || "/usr/sbin/sshd";
     if (!existsSync(sshdPath)) throw new Error(`OpenSSH server was not found at ${sshdPath}`);
     const root = mkdtempSync(join(tmpdir(), "slurm-agent-integration-"));
-    const user = process.env.USER || process.env.LOGNAME || "ubuntu";
+    const user = userInfo().username;
     const hostKey = join(root, "host-key");
     const clientKey = join(root, "client-key");
     const unauthorizedKey = join(root, "unauthorized-key");
@@ -251,6 +252,7 @@ PasswordAuthentication no
 KbdInteractiveAuthentication no
 UsePAM no
 PubkeyAuthentication yes
+PermitRootLogin yes
 SetEnv PATH=${bin}:/usr/local/bin:/usr/bin:/bin
 Subsystem sftp internal-sftp
 LogLevel VERBOSE
@@ -258,11 +260,17 @@ LogLevel VERBOSE
     const sshd = spawn(sshdPath, ["-D", "-e", "-f", configPath], {
       stdio: ["ignore", "ignore", "pipe"],
     });
-    const cluster = new OpenSshCluster({ root, port, fingerprint, sshd });
+    const cluster = new OpenSshCluster({ root, port, fingerprint, sshd, user });
     sshd.stderr?.setEncoding("utf8");
     sshd.stderr?.on("data", (chunk: string) => { cluster.sshdStderr += chunk; });
-    await cluster.waitUntilListening();
-    return cluster;
+    try {
+      await cluster.waitUntilListening();
+      cluster.verifyLogin();
+      return cluster;
+    } catch (error) {
+      cluster.stop();
+      throw error;
+    }
   }
 
   private async waitUntilListening(): Promise<void> {
@@ -276,6 +284,29 @@ LogLevel VERBOSE
     }
   }
 
+  private verifyLogin(): void {
+    const result = spawnSync("ssh", [
+      "-F", "none",
+      "-o", "BatchMode=yes",
+      "-o", "IdentitiesOnly=yes",
+      "-o", "StrictHostKeyChecking=no",
+      "-o", "UserKnownHostsFile=/dev/null",
+      "-o", `IdentityFile=${this.privateKey}`,
+      "-p", String(this.port),
+      `${this.user}@127.0.0.1`,
+      "true",
+    ], { encoding: "utf8", timeout: 5000 });
+    if (result.status !== 0) {
+      throw new Error([
+        `Integration SSH login probe failed for OS account ${this.user}.`,
+        result.error?.message,
+        result.stderr,
+        result.stdout,
+        this.sshdStderr,
+      ].filter(Boolean).join("\n"));
+    }
+  }
+
   run(args: string[], overrides: NodeJS.ProcessEnv = {}): CliExecution {
     const result = spawnSync(process.execPath, [resolve("dist/cli.js"), ...args], {
       env: { ...this.env, ...overrides },
@@ -284,7 +315,13 @@ LogLevel VERBOSE
     });
     let json: Record<string, unknown> = {};
     try { json = JSON.parse(result.stdout) as Record<string, unknown>; } catch { /* asserted by the caller */ }
-    return { status: result.status, stdout: result.stdout, stderr: result.stderr, json };
+    const stderr = result.status === 0 ? result.stderr : [
+      result.error?.message,
+      result.stderr,
+      result.stdout,
+      this.sshdStderr,
+    ].filter(Boolean).join("\n");
+    return { status: result.status, stdout: result.stdout, stderr, json };
   }
 
   setMode(mode: "normal" | "foreign" | "malformed"): void {

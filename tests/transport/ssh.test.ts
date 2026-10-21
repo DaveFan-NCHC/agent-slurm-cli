@@ -12,6 +12,7 @@ const captured = vi.hoisted(() => ({
   interactivePromptEcho: false,
   replies: [] as string[][],
   completeAfterPrimary: false,
+  closeBeforeReady: false,
   connectionErrors: [] as Array<{ message: string; level: string }>,
   execCommands: [] as string[],
   downloadContent: "bundle",
@@ -30,6 +31,10 @@ vi.mock("ssh2", async () => {
     connect(connection: ConnectConfig): this {
       captured.connection = connection;
       captured.connections.push(connection);
+      if (captured.closeBeforeReady) {
+        queueMicrotask(() => this.emit("close"));
+        return this;
+      }
       if (captured.connectionErrors.length > 0) {
         const errors = captured.connectionErrors.splice(0);
         queueMicrotask(() => {
@@ -137,6 +142,7 @@ describe("SSH authentication", () => {
     captured.interactivePromptEcho = false;
     captured.replies = [];
     captured.completeAfterPrimary = false;
+    captured.closeBeforeReady = false;
     captured.connectionErrors = [];
     captured.execCommands = [];
     captured.downloadContent = "bundle";
@@ -163,6 +169,27 @@ describe("SSH authentication", () => {
     await expect(executor.run({ executable: "squeue", args: [] })).rejects.toMatchObject({
       code: "SSH_CONNECTION_FAILED",
       message: "SSH connection failed: Timed out while waiting for handshake",
+    });
+    await executor.close();
+  });
+
+  it("rejects when the connection closes before becoming ready", async () => {
+    captured.closeBeforeReady = true;
+    const executor = new SshExecutor({
+      host: "login.example",
+      port: 22,
+      user: "alice",
+      authentication: { type: "password", password: "test password" },
+      hostFingerprint: "SHA256:test",
+      workspace: "/work",
+      timeoutMs: 30000,
+      readyTimeoutMs: 30000,
+      pushAuthentication: false,
+    });
+
+    await expect(executor.run({ executable: "squeue", args: [] })).rejects.toMatchObject({
+      code: "SSH_CONNECTION_FAILED",
+      message: "SSH connection closed before it was ready.",
     });
     await executor.close();
   });

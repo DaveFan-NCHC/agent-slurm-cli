@@ -159,7 +159,15 @@ export class SshExecutor implements RemoteExecutor {
         const code = verifierCalled && !hostVerified ? "SSH_HOST_VERIFICATION_FAILED" : auth ? "SSH_AUTH_FAILED" : "SSH_CONNECTION_FAILED";
         finishReject(new AgentError(code, `SSH connection failed: ${cause.message}`, ExitCode.SshFailure));
       });
-      client.once("close", () => { state.client = undefined; state.connecting = undefined; });
+      client.once("close", () => {
+        state.client = undefined;
+        state.connecting = undefined;
+        finishReject(new AgentError(
+          "SSH_CONNECTION_FAILED",
+          "SSH connection closed before it was ready.",
+          ExitCode.SshFailure,
+        ));
+      });
       if (config.pushAuthentication || config.authentication.type === "keyboard-interactive-password") {
         client.on("keyboard-interactive", (_name, _instructions, _lang, prompts, finish) => {
           if (config.authentication.type === "keyboard-interactive-password"
