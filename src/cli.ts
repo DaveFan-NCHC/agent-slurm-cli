@@ -38,13 +38,16 @@ import {
   type SubmitOptions, type UpdateOptions,
 } from "./policy/validator.js";
 import { SlurmClient } from "./slurm/client.js";
-import { SshExecutor } from "./transport/ssh.js";
+import { PreferredRemoteExecutor } from "./session/client.js";
+import { closeSession, inspectSession, openSession } from "./session/manager.js";
+import { runSessionWorker } from "./session/worker.js";
 import type { RemoteExecutor } from "./transport/types.js";
 
 const VERSION = "0.10.1";
 const HELP = `slurm-agent ${VERSION}
 
 Usage:
+  slurm-agent session open|status|close
   slurm-agent submit [options] SCRIPT [SCRIPT_ARGS...]
   slurm-agent policy
   slurm-agent cluster-info
@@ -204,6 +207,12 @@ function prevalidateShape(parsed: Parsed): void {
     case "modules":
     case "fairshare":
       enforceShape(parsed, [], 0);
+      break;
+    case "session":
+      enforceShape(parsed, [], 1);
+      if (!["open", "status", "close"].includes(parsed.positionals[0]!)) {
+        throw invalid("session action must be open, status, or close.");
+      }
       break;
     case "discover":
       enforceShape(parsed, [], 1);
@@ -417,7 +426,7 @@ export async function main(
   env: NodeJS.ProcessEnv = process.env,
   stdout: Writer = process.stdout,
   stderr: NodeJS.WritableStream = process.stderr,
-  executorFactory: ExecutorFactory = (ssh) => new SshExecutor(ssh),
+  executorFactory?: ExecutorFactory,
 ): Promise<number> {
   if (argv.length === 1 && (argv[0] === "--help" || argv[0] === "-h")) { stdout.write(`${HELP}\n`); return 0; }
   if (argv.length === 1 && (argv[0] === "--version" || argv[0] === "-V")) { stdout.write(`${VERSION}\n`); return 0; }
@@ -430,17 +439,35 @@ export async function main(
   let auditResources: Record<string, unknown> | undefined;
   try {
     const parsed = parseArgs(argv);
-    action = parsed.command === "discover" && parsed.positionals[0]
-      ? `discover.${parsed.positionals[0]}`
+    action = (parsed.command === "discover" || parsed.command === "session") && parsed.positionals[0]
+      ? `${parsed.command}.${parsed.positionals[0]}`
       : parsed.command;
-    if (!["submit", "policy", "discover", "cluster-info", "modules", "nodes", "list", "history", "fairshare", "status", "diagnose", "usage", "cancel", "hold", "release", "requeue", "update", "signal", "logs", "artifact", "artifacts", "wait"].includes(parsed.command)) {
+    if (!["session", "submit", "policy", "discover", "cluster-info", "modules", "nodes", "list", "history", "fairshare", "status", "diagnose", "usage", "cancel", "hold", "release", "requeue", "update", "signal", "logs", "artifact", "artifacts", "wait"].includes(parsed.command)) {
       throw invalid(`Unknown command: ${parsed.command}.`);
     }
     prevalidateShape(parsed);
     const config = loadConfig(env);
     sshUser = config.ssh.user;
     audit = new AuditLogger(config.auditLogPath, stderr);
-    executor = executorFactory(config.ssh);
+    if (parsed.command === "session") {
+      const operation = parsed.positionals[0]!;
+      const session = operation === "open"
+        ? await openSession(config.ssh, fileURLToPath(import.meta.url), env)
+        : operation === "status"
+          ? await inspectSession(config.ssh)
+          : await closeSession(config.ssh);
+      audit.write({
+        action: `session.${operation}`,
+        ssh_user: config.ssh.user,
+        policy_decision: "allowed",
+        result: "success",
+      });
+      writeJson(stdout, { ok: true, session });
+      return ExitCode.Success;
+    }
+    executor = executorFactory
+      ? executorFactory(config.ssh)
+      : new PreferredRemoteExecutor(config.ssh);
     if (parsed.command === "discover") {
       const discoveryClient = new DiscoveryClient(
         executor, config.ssh.user,
@@ -669,5 +696,13 @@ export async function main(
 
 const invokedPath = process.argv[1];
 if (invokedPath && realpathSync(invokedPath) === realpathSync(fileURLToPath(import.meta.url))) {
-  process.exitCode = await main();
+  if (process.argv[2] === "__session-worker" && process.env.SLURM_AGENT_INTERNAL_SESSION_WORKER === "1") {
+    try {
+      await runSessionWorker();
+    } catch {
+      process.exitCode = ExitCode.SshFailure;
+    }
+  } else {
+    process.exitCode = await main();
+  }
 }

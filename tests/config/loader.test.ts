@@ -138,6 +138,39 @@ describe("SSH authentication configuration", () => {
   });
 });
 
+describe("persistent SSH session configuration", () => {
+  it("uses bounded session lifetime defaults", () => {
+    const config = loadConfig(environment());
+    expect(config.ssh.sessionIdleTimeoutMs).toBe(30 * 60 * 1000);
+    expect(config.ssh.sessionMaxLifetimeMs).toBe(8 * 60 * 60 * 1000);
+    expect(config.ssh.sessionDirectory).toMatch(/^\//);
+  });
+
+  it("accepts explicit session timeouts and an absolute runtime directory", () => {
+    const config = loadConfig(environment({
+      SLURM_SSH_SESSION_IDLE_TIMEOUT_MS: "60000",
+      SLURM_SSH_SESSION_MAX_LIFETIME_MS: "120000",
+      SLURM_SSH_SESSION_DIR: "/run/slurm-agent-test",
+    }));
+    expect(config.ssh).toMatchObject({
+      sessionIdleTimeoutMs: 60000,
+      sessionMaxLifetimeMs: 120000,
+      sessionDirectory: "/run/slurm-agent-test",
+    });
+  });
+
+  it("rejects invalid session lifetime configuration", () => {
+    expect(() => loadConfig(environment({ SLURM_SSH_SESSION_IDLE_TIMEOUT_MS: "999" })))
+      .toThrowError(/SLURM_SSH_SESSION_IDLE_TIMEOUT_MS must be between/);
+    expect(() => loadConfig(environment({
+      SLURM_SSH_SESSION_IDLE_TIMEOUT_MS: "120000",
+      SLURM_SSH_SESSION_MAX_LIFETIME_MS: "60000",
+    }))).toThrowError(/MAX_LIFETIME_MS must be greater than or equal/);
+    expect(() => loadConfig(environment({ SLURM_SSH_SESSION_DIR: "relative/session" })))
+      .toThrowError(/must be an absolute local path/);
+  });
+});
+
 describe("SFTP endpoint configuration", () => {
   it("uses the SSH connection for transfers when no SFTP endpoint is configured", () => {
     const config = loadConfig(environment());

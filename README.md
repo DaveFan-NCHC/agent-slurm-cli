@@ -5,6 +5,7 @@
 The public interface contains only these Slurm lifecycle operations:
 
 ```text
+slurm-agent session open|status|close
 slurm-agent submit
 slurm-agent policy
 slurm-agent discover cluster|modules|associations|runtimes
@@ -124,7 +125,35 @@ export SLURM_SSH_AUTH_TIMEOUT_MS=120000
 
 The PAM password mode can also wait for an automatic push within the same keyboard-interactive exchange. In that case use both `SLURM_SSH_PASSWORD_AUTH_METHOD=keyboard-interactive` and `SLURM_SSH_PUSH_AUTH=true`; after receiving the password, the server must initiate the push without another prompt.
 
-The authentication timeout defaults to 120 seconds in push mode and can be set from 1000 to 600000 milliseconds. The CLI waits on the same SSH connection until the user approves, denies, or the timeout expires. Every CLI invocation creates a new SSH connection and may therefore generate a new push request. Modes that ask the CLI to enter an OTP or select a push option are rejected.
+The authentication timeout defaults to 120 seconds in push mode and can be set from 1000 to 600000 milliseconds. The CLI waits on the same SSH connection until the user approves, denies, or the timeout expires. Without an explicitly opened persistent session, every CLI invocation creates a new SSH connection and may therefore generate a new push request. Modes that ask the CLI to enter an OTP or select a push option are rejected.
+
+### Optional persistent SSH sessions
+
+By default, commands retain the one-shot behavior described above: they create an SSH connection, perform the requested operation, and close it. An Agent can explicitly open a persistent session when repeated authentication or push approval is undesirable:
+
+```bash
+slurm-agent session open
+slurm-agent session status
+slurm-agent status 12345
+slurm-agent list
+slurm-agent session close
+```
+
+`session open` starts an owner-only local worker that holds the verified SSH connection. Repeating `session open` for the same SSH/SFTP connection identity is idempotent and returns `reused: true`. Ordinary commands automatically prefer a healthy open session; when no session is open, they continue to use a one-shot connection without requiring a different flag or environment mode. After `session close`, commands return to one-shot behavior.
+
+The session identity is derived from the configured host, port, user, authentication mode, and host-verification settings. It never contains the password, private-key contents, or an OTP. If a separately configured SFTP endpoint exists, one logical session owns both the command SSH connection and the transfer connection, and `session open` authenticates both before reporting `ready`.
+
+Persistent sessions expire after 30 idle minutes or 8 hours of total lifetime by default. A successful remote operation refreshes only the idle deadline. Configure bounded custom values in the trusted runtime environment:
+
+```bash
+export SLURM_SSH_SESSION_IDLE_TIMEOUT_MS=1800000
+export SLURM_SSH_SESSION_MAX_LIFETIME_MS=28800000
+export SLURM_SSH_SESSION_DIR=/run/user/$(id -u)/slurm-agent
+```
+
+`SLURM_SSH_SESSION_DIR` must be an absolute, owner-only local directory; its default is an owner-specific directory below the operating system temporary directory. Session sockets and metadata are owner-only, and live SSH state is never written to disk. A worker restart, host restart, server disconnect, idle expiry, or maximum-lifetime expiry ends the session. If a session is already unavailable before a command is dispatched, the command safely falls back to the normal one-shot connection. If connectivity is lost after dispatch, the command returns `SESSION_LOST` and is not automatically retried, preventing duplicate mutations such as submit or cancel.
+
+Dynamic OTP entry remains unsupported in this version. The persistent worker and session lifecycle are the foundation for adding an `otp_required` authentication state without reconnecting.
 
 Do not put the password in command-line arguments or agent-generated input. `SLURM_SSH_KNOWN_HOSTS` must contain a plain hostname entry (or `[host]:port` for a non-default port). Hashed hostnames are not parsed. As an alternative, set `SLURM_SSH_HOST_FINGERPRINT` to a pinned `SHA256:...` host-key fingerprint. One of these verification methods remains mandatory for either authentication method; insecure host-key checking is not available. A separate SFTP endpoint is checked against `SLURM_SFTP_KNOWN_HOSTS` (which defaults to the SSH known-hosts file) or `SLURM_SFTP_HOST_FINGERPRINT`. An SSH fingerprint is inherited only when SSH and SFTP use the same host and port.
 

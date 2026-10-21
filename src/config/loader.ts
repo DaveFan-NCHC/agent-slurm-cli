@@ -1,4 +1,6 @@
 import { readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { isAbsolute, join } from "node:path";
 import { AgentError, ExitCode } from "../errors/errors.js";
 
 export interface SshConnectionConfig {
@@ -18,6 +20,9 @@ export interface SshConnectionConfig {
 export interface SshConfig extends SshConnectionConfig {
   workspace: string;
   timeoutMs: number;
+  sessionDirectory: string;
+  sessionIdleTimeoutMs: number;
+  sessionMaxLifetimeMs: number;
   sftp?: SshConnectionConfig;
 }
 
@@ -54,6 +59,24 @@ function port(value: string | undefined, fallback: number, name: string): number
   return parsed;
 }
 
+function boundedMilliseconds(
+  value: string | undefined,
+  fallback: number,
+  name: string,
+  minimum: number,
+  maximum: number,
+): number {
+  const parsed = Number(value?.trim() || String(fallback));
+  if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) {
+    throw new AgentError(
+      "CONFIGURATION_ERROR",
+      `${name} must be between ${minimum} and ${maximum}.`,
+      ExitCode.General,
+    );
+  }
+  return parsed;
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const host = required(env, "SLURM_SSH_HOST");
   const sshPort = port(env.SLURM_SSH_PORT, 22, "SLURM_SSH_PORT");
@@ -73,6 +96,36 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const readyTimeoutMs = Number(readyTimeoutText);
   if (!Number.isInteger(readyTimeoutMs) || readyTimeoutMs < 1000 || readyTimeoutMs > 600000) {
     throw new AgentError("CONFIGURATION_ERROR", "SLURM_SSH_AUTH_TIMEOUT_MS must be between 1000 and 600000.", ExitCode.General);
+  }
+  const sessionIdleTimeoutMs = boundedMilliseconds(
+    env.SLURM_SSH_SESSION_IDLE_TIMEOUT_MS,
+    30 * 60 * 1000,
+    "SLURM_SSH_SESSION_IDLE_TIMEOUT_MS",
+    1000,
+    7 * 24 * 60 * 60 * 1000,
+  );
+  const sessionMaxLifetimeMs = boundedMilliseconds(
+    env.SLURM_SSH_SESSION_MAX_LIFETIME_MS,
+    8 * 60 * 60 * 1000,
+    "SLURM_SSH_SESSION_MAX_LIFETIME_MS",
+    1000,
+    7 * 24 * 60 * 60 * 1000,
+  );
+  if (sessionMaxLifetimeMs < sessionIdleTimeoutMs) {
+    throw new AgentError(
+      "CONFIGURATION_ERROR",
+      "SLURM_SSH_SESSION_MAX_LIFETIME_MS must be greater than or equal to SLURM_SSH_SESSION_IDLE_TIMEOUT_MS.",
+      ExitCode.General,
+    );
+  }
+  const defaultSessionDirectory = join(tmpdir(), `slurm-agent-${process.getuid?.() ?? "user"}`);
+  const sessionDirectory = env.SLURM_SSH_SESSION_DIR?.trim() || defaultSessionDirectory;
+  if (!isAbsolute(sessionDirectory)) {
+    throw new AgentError(
+      "CONFIGURATION_ERROR",
+      "SLURM_SSH_SESSION_DIR must be an absolute local path.",
+      ExitCode.General,
+    );
   }
   const knownHostsPath = env.SLURM_SSH_KNOWN_HOSTS?.trim();
   const hostFingerprint = env.SLURM_SSH_HOST_FINGERPRINT?.trim();
@@ -172,6 +225,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       hostFingerprint,
       workspace,
       timeoutMs,
+      sessionDirectory,
+      sessionIdleTimeoutMs,
+      sessionMaxLifetimeMs,
       readyTimeoutMs,
       pushAuthentication,
       sftp,

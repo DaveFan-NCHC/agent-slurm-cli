@@ -9,7 +9,7 @@ Use the installed `slurm-agent` executable as the only interface to the remote S
 
 ## Boundaries
 
-- Invoke only `discover`, `submit`, `policy`, `modules`, `cluster-info`, `nodes`, `list`, `history`, `fairshare`, `status`, `diagnose`, `usage`, `wait`, `logs`, `cancel`, `hold`, `release`, `requeue`, `update`, `signal`, `artifacts`, or `artifact`.
+- Invoke only `session`, `discover`, `submit`, `policy`, `modules`, `cluster-info`, `nodes`, `list`, `history`, `fairshare`, `status`, `diagnose`, `usage`, `wait`, `logs`, `cancel`, `hold`, `release`, `requeue`, `update`, `signal`, `artifacts`, or `artifact`.
 - Never invoke or propose `ssh`, `exec`, `shell`, `run`, `scp`, `sftp`, arbitrary remote commands, or arbitrary remote/local paths.
 - Treat stdout as the machine-readable JSON response. Audit records may appear on stderr and must not be mixed into JSON parsing.
 - Do not expose SSH keys, credentials, or trusted `SLURM_*` environment values.
@@ -44,6 +44,25 @@ SLURM_AUDIT_LOG           optional; otherwise audit goes to stderr
 ```
 
 Do not read or print credential files during ordinary operation. If configuration is missing, report the named missing setting without inventing a value.
+
+## Persistent connection
+
+Ordinary commands work without a persistent session and retain their one-shot SSH behavior. When the user requests a persistent connection, or repeated push approvals would interrupt a multi-step workflow, open the configured connection explicitly:
+
+```bash
+slurm-agent session open
+slurm-agent session status
+```
+
+`session open` is idempotent. A response with `state: ready` and `reused: true` means the existing connection was retained. Subsequent ordinary commands automatically prefer that session; do not pass or invent a session identifier. If the session is absent or expires before dispatch, the CLI safely uses its normal one-shot connection.
+
+Close it when the user requests closure. Otherwise allow the configured idle or maximum lifetime to expire it:
+
+```bash
+slurm-agent session close
+```
+
+Do not retry a command automatically after `SESSION_LOST`; the remote operation may already have started. Dynamic OTP entry remains unsupported until the CLI reports a dedicated interactive authentication state.
 
 ## Bootstrap discovery
 

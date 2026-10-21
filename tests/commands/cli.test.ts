@@ -72,6 +72,7 @@ describe("CLI boundary", () => {
     const stdout = new Sink();
     expect(await main(["--help"], {}, stdout)).toBe(0);
     expect(stdout.value).toContain("slurm-agent submit");
+    expect(stdout.value).toContain("slurm-agent session open|status|close");
     expect(stdout.value).toContain("slurm-agent policy");
     expect(stdout.value).toContain("slurm-agent modules");
     expect(stdout.value).toContain("slurm-agent discover cluster|modules|associations|runtimes");
@@ -79,6 +80,13 @@ describe("CLI boundary", () => {
     expect(stdout.value).toContain("slurm-agent artifacts JOB_ID [--download [--prefix RELATIVE_DIRECTORY] [--force]]");
     expect(stdout.value).toContain("--artifact-input REF");
     expect(stdout.value).not.toContain("slurm-agent artifact-bundle");
+  });
+  it("rejects an unknown session action before loading credentials", async () => {
+    const stdout = new Sink();
+    expect(await main(["session", "restart"], {}, stdout)).toBe(2);
+    expect(JSON.parse(stdout.value)).toMatchObject({
+      ok: false, error: { code: "INVALID_ARGUMENT" },
+    });
   });
   it.each([
     ["submit", "--script", "jobs/a.sh", "--partition", "p", "--export", "ALL"],

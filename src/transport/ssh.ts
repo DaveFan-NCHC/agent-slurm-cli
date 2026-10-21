@@ -88,6 +88,7 @@ function appendLimited(chunks: Buffer[], chunk: Buffer, state: { size: number; t
 export class SshExecutor implements RemoteExecutor {
   private readonly commandConnection: { client?: Client; connecting?: Promise<Client> } = {};
   private readonly transferConnection: { client?: Client; connecting?: Promise<Client> } = {};
+  private reconnectAllowed = true;
 
   constructor(private readonly config: SshConfig) {}
 
@@ -97,6 +98,13 @@ export class SshExecutor implements RemoteExecutor {
   ): Promise<Client> {
     if (state.client) return Promise.resolve(state.client);
     if (state.connecting) return state.connecting;
+    if (!this.reconnectAllowed) {
+      return Promise.reject(new AgentError(
+        "SESSION_LOST",
+        "The persistent SSH session is no longer connected.",
+        ExitCode.SshFailure,
+      ));
+    }
     state.connecting = new Promise<Client>((resolve, reject) => {
       const client = new Client();
       let hostVerified = false;
@@ -218,6 +226,27 @@ export class SshExecutor implements RemoteExecutor {
     return this.config.sftp
       ? this.connect(this.config.sftp, this.transferConnection)
       : this.connectForCommands();
+  }
+
+  async open(): Promise<void> {
+    await this.connectForCommands();
+    if (this.config.sftp) await this.connectForTransfer();
+  }
+
+  preventReconnect(): void {
+    this.reconnectAllowed = false;
+  }
+
+  isConnected(): boolean {
+    return this.commandConnection.client !== undefined
+      && (!this.config.sftp || this.transferConnection.client !== undefined);
+  }
+
+  connectionStatus(): { command: boolean; transfer: "shared" | boolean } {
+    return {
+      command: this.commandConnection.client !== undefined,
+      transfer: this.config.sftp ? this.transferConnection.client !== undefined : "shared",
+    };
   }
 
   private async runRendered(rendered: string, limit: number): Promise<RemoteResult> {
