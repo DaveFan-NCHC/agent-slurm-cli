@@ -47,9 +47,19 @@ test:
         coverage_format: cobertura
         path: coverage/cobertura-coverage.xml
 
+integration:
+  stage: test
+  before_script:
+    - if ! command -v sshd >/dev/null; then apt-get update && apt-get install -y --no-install-recommends openssh-server openssh-client; fi
+    - if [ "$(id -u)" = "0" ]; then mkdir -p /run/sshd; fi
+    - npm ci --cache .npm --prefer-offline
+  script:
+    - npm run test:integration
+
 package:
   stage: build
   needs:
+    - integration
     - lint
     - typecheck
     - test
