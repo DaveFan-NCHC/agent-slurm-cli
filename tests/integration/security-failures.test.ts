@@ -1,12 +1,12 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { OpenSshCluster } from "./support/openssh-cluster.js";
+import { SshTestCluster } from "./support/ssh-test-cluster.js";
 
-describe("OpenSSH integration security failures", () => {
-  let cluster: OpenSshCluster;
+describe("SSH integration security failures", () => {
+  let cluster: SshTestCluster;
 
-  beforeAll(async () => { cluster = await OpenSshCluster.start(); });
+  beforeAll(async () => { cluster = await SshTestCluster.start(); });
   beforeEach(() => cluster.setMode("normal"));
-  afterAll(() => cluster.stop());
+  afterAll(() => cluster?.stop());
 
   it("rejects a mismatched SSH host fingerprint", () => {
     const result = cluster.run(["cluster-info"], {

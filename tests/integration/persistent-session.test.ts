@@ -1,13 +1,13 @@
 import { existsSync, readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { waitFor } from "../support/session.js";
-import { OpenSshCluster } from "./support/openssh-cluster.js";
+import { SshTestCluster } from "./support/ssh-test-cluster.js";
 
-describe("persistent CLI session over OpenSSH", () => {
-  let cluster: OpenSshCluster;
+describe("persistent CLI session over SSH", () => {
+  let cluster: SshTestCluster;
 
-  beforeAll(async () => { cluster = await OpenSshCluster.start(); });
-  afterAll(() => cluster.stop());
+  beforeAll(async () => { cluster = await SshTestCluster.start(); });
+  afterAll(() => cluster?.stop());
 
   it("opens, reuses, serves commands, and closes a detached worker", async () => {
     const opened = cluster.run(["session", "open"]);

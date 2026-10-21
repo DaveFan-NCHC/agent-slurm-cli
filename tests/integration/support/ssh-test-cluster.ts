@@ -6,20 +6,14 @@ import {
 import { createServer } from "node:net";
 import { tmpdir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { utils } from "ssh2";
 
 export interface CliExecution {
   status: number | null;
   stdout: string;
   stderr: string;
   json: Record<string, unknown>;
-}
-
-function checked(command: string, args: string[]): string {
-  const result = spawnSync(command, args, { encoding: "utf8" });
-  if (result.status !== 0) {
-    throw new Error(`${command} failed: ${result.stderr || result.stdout}`);
-  }
-  return result.stdout;
 }
 
 async function availablePort(): Promise<number> {
@@ -151,7 +145,7 @@ require_apptainer_for_generated_scripts: false
 `;
 }
 
-export class OpenSshCluster {
+export class SshTestCluster {
   readonly root: string;
   readonly workspace: string;
   readonly localWorkspace: string;
@@ -165,20 +159,20 @@ export class OpenSshCluster {
   readonly port: number;
   readonly fingerprint: string;
   readonly env: NodeJS.ProcessEnv;
-  private readonly sshd: ChildProcess;
-  private sshdStderr = "";
+  private readonly sshServer: ChildProcess;
+  private serverOutput = "";
 
   private constructor(options: {
     root: string;
     port: number;
     fingerprint: string;
-    sshd: ChildProcess;
+    sshServer: ChildProcess;
     user: string;
   }) {
     this.root = options.root;
     this.port = options.port;
     this.fingerprint = options.fingerprint;
-    this.sshd = options.sshd;
+    this.sshServer = options.sshServer;
     this.user = options.user;
     this.workspace = join(this.root, "remote-workspace");
     this.localWorkspace = join(this.root, "local-workspace");
@@ -207,21 +201,21 @@ export class OpenSshCluster {
     };
   }
 
-  static async start(): Promise<OpenSshCluster> {
-    const sshdPath = process.env.SLURM_TEST_SSHD || "/usr/sbin/sshd";
-    if (!existsSync(sshdPath)) throw new Error(`OpenSSH server was not found at ${sshdPath}`);
+  static async start(): Promise<SshTestCluster> {
     const root = mkdtempSync(join(tmpdir(), "slurm-agent-integration-"));
     const user = userInfo().username;
     const hostKey = join(root, "host-key");
     const clientKey = join(root, "client-key");
     const unauthorizedKey = join(root, "unauthorized-key");
     for (const path of [hostKey, clientKey, unauthorizedKey]) {
-      checked("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", path]);
+      const keyPair = utils.generateKeyPairSync("ed25519");
+      writeFileSync(path, keyPair.private, { mode: 0o600 });
+      writeFileSync(`${path}.pub`, keyPair.public, { mode: 0o600 });
     }
     writeFileSync(join(root, "authorized_keys"), readFileSync(`${clientKey}.pub`));
-    const fingerprintOutput = checked("ssh-keygen", ["-lf", `${hostKey}.pub`, "-E", "sha256"]);
-    const fingerprint = fingerprintOutput.trim().split(/\s+/)[1];
-    if (!fingerprint) throw new Error("Unable to derive the integration SSH host fingerprint");
+    const parsedHostKey = utils.parseKey(readFileSync(`${hostKey}.pub`));
+    if (parsedHostKey instanceof Error) throw parsedHostKey;
+    const fingerprint = `SHA256:${createHash("sha256").update(parsedHostKey.getPublicSSH()).digest("base64").replace(/=+$/, "")}`;
 
     const workspace = join(root, "remote-workspace");
     const localWorkspace = join(root, "local-workspace");
@@ -241,31 +235,24 @@ export class OpenSshCluster {
     }
 
     const port = await availablePort();
-    const configPath = join(root, "sshd_config");
-    writeFileSync(configPath, `Port ${port}
-ListenAddress 127.0.0.1
-HostKey ${hostKey}
-PidFile ${join(root, "sshd.pid")}
-AuthorizedKeysFile ${join(root, "authorized_keys")}
-StrictModes no
-PasswordAuthentication no
-KbdInteractiveAuthentication no
-UsePAM no
-PubkeyAuthentication yes
-PermitRootLogin yes
-SetEnv PATH=${bin}:/usr/local/bin:/usr/bin:/bin
-Subsystem sftp internal-sftp
-LogLevel VERBOSE
-`);
-    const sshd = spawn(sshdPath, ["-D", "-e", "-f", configPath], {
-      stdio: ["ignore", "ignore", "pipe"],
+    const sshServer = spawn(process.execPath, [resolve("tests/integration/support/ssh-test-server.mjs")], {
+      env: {
+        ...process.env,
+        SLURM_TEST_HOST_KEY: hostKey,
+        SLURM_TEST_AUTHORIZED_KEY: join(root, "authorized_keys"),
+        SLURM_TEST_PORT: String(port),
+        SLURM_TEST_USER: user,
+        SLURM_TEST_PATH: `${bin}:/usr/local/bin:/usr/bin:/bin`,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
     });
-    const cluster = new OpenSshCluster({ root, port, fingerprint, sshd, user });
-    sshd.stderr?.setEncoding("utf8");
-    sshd.stderr?.on("data", (chunk: string) => { cluster.sshdStderr += chunk; });
+    const cluster = new SshTestCluster({ root, port, fingerprint, sshServer, user });
+    sshServer.stdout?.setEncoding("utf8");
+    sshServer.stderr?.setEncoding("utf8");
+    sshServer.stdout?.on("data", (chunk: string) => { cluster.serverOutput += chunk; });
+    sshServer.stderr?.on("data", (chunk: string) => { cluster.serverOutput += chunk; });
     try {
       await cluster.waitUntilListening();
-      cluster.verifyLogin();
       return cluster;
     } catch (error) {
       cluster.stop();
@@ -275,35 +262,12 @@ LogLevel VERBOSE
 
   private async waitUntilListening(): Promise<void> {
     const deadline = Date.now() + 5000;
-    while (!this.sshdStderr.includes("Server listening")) {
-      if (this.sshd.exitCode !== null) {
-        throw new Error(`Integration sshd exited with ${this.sshd.exitCode}: ${this.sshdStderr}`);
+    while (!this.serverOutput.includes("READY")) {
+      if (this.sshServer.exitCode !== null) {
+        throw new Error(`Integration SSH server exited with ${this.sshServer.exitCode}: ${this.serverOutput}`);
       }
-      if (Date.now() >= deadline) throw new Error(`Integration sshd did not start: ${this.sshdStderr}`);
+      if (Date.now() >= deadline) throw new Error(`Integration SSH server did not start: ${this.serverOutput}`);
       await new Promise((resolveWait) => setTimeout(resolveWait, 10));
-    }
-  }
-
-  private verifyLogin(): void {
-    const result = spawnSync("ssh", [
-      "-F", "none",
-      "-o", "BatchMode=yes",
-      "-o", "IdentitiesOnly=yes",
-      "-o", "StrictHostKeyChecking=no",
-      "-o", "UserKnownHostsFile=/dev/null",
-      "-o", `IdentityFile=${this.privateKey}`,
-      "-p", String(this.port),
-      `${this.user}@127.0.0.1`,
-      "true",
-    ], { encoding: "utf8", timeout: 5000 });
-    if (result.status !== 0) {
-      throw new Error([
-        `Integration SSH login probe failed for OS account ${this.user}.`,
-        result.error?.message,
-        result.stderr,
-        result.stdout,
-        this.sshdStderr,
-      ].filter(Boolean).join("\n"));
     }
   }
 
@@ -319,7 +283,7 @@ LogLevel VERBOSE
       result.error?.message,
       result.stderr,
       result.stdout,
-      this.sshdStderr,
+      this.serverOutput,
     ].filter(Boolean).join("\n");
     return { status: result.status, stdout: result.stdout, stderr, json };
   }
@@ -349,7 +313,7 @@ LogLevel VERBOSE
         if (parsed.pid && Number.isInteger(parsed.pid)) process.kill(parsed.pid, "SIGTERM");
       } catch { /* best-effort cleanup */ }
     }
-    if (this.sshd.exitCode === null) this.sshd.kill("SIGTERM");
+    if (this.sshServer.exitCode === null) this.sshServer.kill("SIGTERM");
     if (existsSync(this.root)) rmSync(this.root, { recursive: true, force: true });
   }
 

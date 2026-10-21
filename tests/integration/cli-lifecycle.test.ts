@@ -1,13 +1,13 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { OpenSshCluster } from "./support/openssh-cluster.js";
+import { SshTestCluster } from "./support/ssh-test-cluster.js";
 
-describe("CLI lifecycle over OpenSSH", () => {
-  let cluster: OpenSshCluster;
+describe("CLI lifecycle over SSH", () => {
+  let cluster: SshTestCluster;
 
-  beforeAll(async () => { cluster = await OpenSshCluster.start(); });
-  afterAll(() => cluster.stop());
+  beforeAll(async () => { cluster = await SshTestCluster.start(); });
+  afterAll(() => cluster?.stop());
 
   it("queries the fake cluster through a real SSH command channel", () => {
     cluster.assertFixtureLayout();

@@ -535,9 +535,8 @@ Open `coverage/index.html` for the detailed local report.
 
 Tests cover traversal, absolute paths, remote/local symlink escape, shell metacharacters/control characters, unexpected commands, Slurm argument injection, resource limits, partition denial, ownership denial, fixed log/artifact paths, parsers, and output construction. Component tests use typed transports from `tests/support`; persistent-session tests also exercise a real child process and Unix socket. No live cluster is required.
 
-`npm run test:integration` builds the packaged CLI and starts an isolated OpenSSH
-server on a random local port with temporary host/client keys, a real SFTP
-subsystem, and fake Slurm executables. It exercises CLI subprocess, SSH/SFTP,
-persistent-session, lifecycle, artifact, audit, and failure boundaries without
-requiring a Slurm cluster. Set `SLURM_TEST_SSHD` only when `sshd` is installed at
-a non-standard path.
+`npm run test:integration` builds the packaged CLI and starts an isolated,
+unprivileged SSH server on a random local port with temporary host/client keys,
+a real SFTP subsystem, and fake Slurm executables. It exercises CLI subprocess,
+SSH/SFTP, persistent-session, lifecycle, artifact, audit, and failure boundaries
+without requiring a Slurm cluster or elevated container capabilities.

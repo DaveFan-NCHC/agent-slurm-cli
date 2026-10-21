@@ -1,17 +1,17 @@
 import { readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { OpenSshCluster } from "./support/openssh-cluster.js";
+import { SshTestCluster } from "./support/ssh-test-cluster.js";
 
-describe("artifact transfer over OpenSSH SFTP", () => {
-  let cluster: OpenSshCluster;
+describe("artifact transfer over SSH SFTP", () => {
+  let cluster: SshTestCluster;
 
   beforeAll(async () => {
-    cluster = await OpenSshCluster.start();
+    cluster = await SshTestCluster.start();
     const submitted = cluster.run(["submit", "-p", "test", "jobs/integration.sh"]);
     expect(submitted.status, submitted.stderr).toBe(0);
   });
-  afterAll(() => cluster.stop());
+  afterAll(() => cluster?.stop());
 
   it("downloads and verifies a remote artifact through real SFTP", () => {
     const result = cluster.run(["artifact", "12345", "--path", "results/model.txt"]);
