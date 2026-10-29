@@ -7,7 +7,7 @@ import { QueryExecutor, Sink } from "../support/cli.js";
 
 describe("CLI query boundary", () => {
   it("dispatches query commands with structured JSON", async () => {
-    const root = mkdtempSync(join(tmpdir(), "slurm-agent-cli-query-"));
+    const root = mkdtempSync(join(tmpdir(), "agent-slurm-cli-query-"));
     try {
       writeFileSync(join(root, "key"), "test-key");
       writeFileSync(join(root, "known_hosts"), "host ssh-ed25519 AAAA\n");

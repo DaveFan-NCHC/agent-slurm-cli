@@ -69,7 +69,7 @@ describe("CLI argument and discovery boundary", () => {
   });
 
   it("runs discovery without loading operational policy", async () => {
-    const root = mkdtempSync(join(tmpdir(), "slurm-agent-cli-discover-"));
+    const root = mkdtempSync(join(tmpdir(), "agent-slurm-cli-discover-"));
     try {
       writeFileSync(join(root, "key"), "test-key");
       writeFileSync(join(root, "known_hosts"), "host ssh-ed25519 AAAA\n");

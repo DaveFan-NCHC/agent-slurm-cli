@@ -7,7 +7,7 @@ import { QueryExecutor, Sink, SubmitExecutor } from "../support/cli.js";
 
 describe("CLI submission boundary", () => {
   it("accepts sbatch-like options, a positional local script, and script arguments", async () => {
-    const root = mkdtempSync(join(tmpdir(), "slurm-agent-cli-"));
+    const root = mkdtempSync(join(tmpdir(), "agent-slurm-cli-"));
     try {
       mkdirSync(join(root, "jobs"));
       mkdirSync(join(root, "config"));

@@ -1,4 +1,4 @@
 interface:
   display_name: "Slurm Agent CLI"
   short_description: "Safely manage Slurm jobs and download artifacts"
-  default_prompt: "Use $slurm-agent-cli to safely operate a Slurm job and retrieve its artifacts."
+  default_prompt: "Use $agent-slurm-cli to safely operate a Slurm job and retrieve its artifacts."
