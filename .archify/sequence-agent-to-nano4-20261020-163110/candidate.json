@@ -7,10 +7,10 @@
     "output": ".archify/sequence-agent-to-nano4-20261020-163110/agent-to-nano4-submission.html",
     "quality_profile": "showcase",
     "repository": {
-      "url": "https://gitlab.td.nchc.org.tw/llm-taskforce/agentic-team/dev/dave/agent-slurm-cli.git",
-      "provider": "gitlab",
+      "url": "__ARCHIFY_REPOSITORY_URL__",
+      "provider": "__ARCHIFY_REPOSITORY_PROVIDER__",
       "link_mode": "web",
-      "revision": "1c1d8668ee7fcd175b013e5a398701b85fa748b8"
+      "revision": "__ARCHIFY_REPOSITORY_REVISION__"
     }
   },
   "participants": [

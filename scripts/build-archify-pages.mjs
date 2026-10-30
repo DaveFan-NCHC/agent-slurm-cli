@@ -1,5 +1,4 @@
 import {
-  copyFileSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -15,6 +14,10 @@ const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const archifyRoot = resolve(repositoryRoot, ".archify");
 const publicRoot = resolve(repositoryRoot, "public");
 const diagramRoot = resolve(publicRoot, "diagrams");
+const repositoryUrlPlaceholder = "__ARCHIFY_REPOSITORY_URL__";
+const repositoryLabelPlaceholder = "__ARCHIFY_REPOSITORY_LABEL__";
+const repositoryRevisionPlaceholder = "__ARCHIFY_REPOSITORY_REVISION__";
+const repositoryShortRevisionPlaceholder = "__ARCHIFY_REPOSITORY_SHORT_REVISION__";
 
 function walk(directory) {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -51,6 +54,71 @@ function diagramDate(path) {
   return `${match[1]}-${match[2]}-${match[3]} ${match[4]}:${match[5]}`;
 }
 
+function repositoryConfig(env = process.env) {
+  const githubUrl = env.GITHUB_REPOSITORY
+    ? `${env.GITHUB_SERVER_URL || "https://github.com"}/${env.GITHUB_REPOSITORY}`
+    : undefined;
+  const rawUrl = env.ARCHIFY_REPOSITORY_URL || env.CI_PROJECT_URL || githubUrl;
+  if (!rawUrl) {
+    throw new Error(
+      "Set ARCHIFY_REPOSITORY_URL, or run the build in GitLab CI/GitHub Actions.",
+    );
+  }
+
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(rawUrl);
+  } catch {
+    throw new Error("ARCHIFY_REPOSITORY_URL must be an absolute HTTP(S) URL.");
+  }
+  if (!["http:", "https:"].includes(parsedUrl.protocol)
+      || parsedUrl.username || parsedUrl.password || parsedUrl.search || parsedUrl.hash) {
+    throw new Error(
+      "ARCHIFY_REPOSITORY_URL must be an HTTP(S) URL without credentials, query, or fragment.",
+    );
+  }
+
+  parsedUrl.pathname = parsedUrl.pathname.replace(/\.git\/?$/, "").replace(/\/+$/, "");
+  const url = parsedUrl.toString().replace(/\/$/, "");
+  const inferredProvider = env.GITHUB_REPOSITORY || parsedUrl.hostname === "github.com"
+    ? "github"
+    : "gitlab";
+  const provider = (env.ARCHIFY_REPOSITORY_PROVIDER || inferredProvider).toLowerCase();
+  if (provider !== "gitlab" && provider !== "github") {
+    throw new Error("ARCHIFY_REPOSITORY_PROVIDER must be gitlab or github.");
+  }
+
+  const revision = env.ARCHIFY_REPOSITORY_REVISION || env.CI_COMMIT_SHA || env.GITHUB_SHA;
+  if (!revision || !/^[0-9a-f]{7,64}$/i.test(revision)) {
+    throw new Error(
+      "Set ARCHIFY_REPOSITORY_REVISION, or run the build in GitLab CI/GitHub Actions.",
+    );
+  }
+
+  return {
+    label: `${parsedUrl.host}${parsedUrl.pathname}`,
+    provider,
+    revision,
+    url,
+  };
+}
+
+function renderDiagram(sourcePath, config) {
+  let html = readFileSync(sourcePath, "utf8")
+    .replaceAll(repositoryUrlPlaceholder, config.url)
+    .replaceAll(repositoryLabelPlaceholder, config.label)
+    .replaceAll(repositoryRevisionPlaceholder, config.revision)
+    .replaceAll(repositoryShortRevisionPlaceholder, config.revision.slice(0, 7));
+
+  if (config.provider === "github") {
+    html = html
+      .replaceAll(`${config.url}/-/blob/`, `${config.url}/blob/`)
+      .replaceAll(`${config.url}/-/tree/`, `${config.url}/tree/`)
+      .replace(/#L(\d+)-(\d+)/g, "#L$1-L$2");
+  }
+  return html;
+}
+
 if (!existsSync(archifyRoot)) {
   throw new Error("No .archify directory was found.");
 }
@@ -83,13 +151,14 @@ if (diagrams.length === 0) {
   throw new Error("No Archify diagrams were found to publish.");
 }
 
+const repository = repositoryConfig();
 rmSync(publicRoot, { recursive: true, force: true });
 mkdirSync(diagramRoot, { recursive: true });
 for (const diagram of diagrams) {
   const destinationPath = resolve(diagramRoot, diagram.sourceRelative);
   assertContained(diagramRoot, destinationPath, "Published diagram");
   mkdirSync(dirname(destinationPath), { recursive: true });
-  copyFileSync(diagram.sourcePath, destinationPath);
+  writeFileSync(destinationPath, renderDiagram(diagram.sourcePath, repository), "utf8");
 }
 
 const projectName = process.env.CI_PROJECT_NAME || "agent-slurm-cli";
@@ -166,7 +235,7 @@ const index = `<!doctype html>
       </header>
       <section class="diagram-grid" aria-label="Archify 圖表列表">${cards}
       </section>
-      <footer>共 ${diagrams.length} 張圖表，由 GitLab Pages 自動發布。</footer>
+      <footer>共 ${diagrams.length} 張圖表，由 ${escapeHtml(repository.provider === "github" ? "GitHub Pages" : "GitLab Pages")} 自動發布。</footer>
     </main>
   </body>
 </html>

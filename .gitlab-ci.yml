@@ -77,6 +77,8 @@ deploy-pages:
   needs:
     - job: package
       artifacts: false
+  variables:
+    ARCHIFY_REPOSITORY_PROVIDER: gitlab
   before_script: []
   script:
     - npm run build:pages

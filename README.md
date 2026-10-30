@@ -533,6 +533,18 @@ Open `coverage/index.html` for the detailed local report.
 
 [`.gitlab-ci.yml`](.gitlab-ci.yml) runs for branches, tags, and merge requests. Linting, type checking, and coverage-enforced tests run in parallel on Node.js 22; GitLab receives a Cobertura coverage report, and the package job starts only after all three pass and retains `dist/` plus the npm tarball for seven days.
 
+The Pages build keeps repository URLs out of the committed Archify files and
+injects them at build time. GitLab CI uses `CI_PROJECT_URL` and
+`CI_COMMIT_SHA`; GitHub Actions uses `GITHUB_REPOSITORY`, `GITHUB_SERVER_URL`,
+and `GITHUB_SHA`. For a local build, provide the equivalent values explicitly:
+
+```bash
+ARCHIFY_REPOSITORY_URL=https://github.com/OWNER/REPOSITORY \
+ARCHIFY_REPOSITORY_PROVIDER=github \
+ARCHIFY_REPOSITORY_REVISION=$(git rev-parse HEAD) \
+npm run build:pages
+```
+
 Tests cover traversal, absolute paths, remote/local symlink escape, shell metacharacters/control characters, unexpected commands, Slurm argument injection, resource limits, partition denial, ownership denial, fixed log/artifact paths, parsers, and output construction. Component tests use typed transports from `tests/support`; persistent-session tests also exercise a real child process and Unix socket. No live cluster is required.
 
 `npm run test:integration` builds the packaged CLI and starts an isolated,

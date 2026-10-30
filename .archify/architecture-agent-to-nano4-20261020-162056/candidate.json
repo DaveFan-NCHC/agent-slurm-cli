@@ -7,10 +7,10 @@
     "quality_profile": "showcase",
     "output": ".archify/architecture-agent-to-nano4-20261020-162056/agent-to-nano4-architecture.html",
     "repository": {
-      "url": "https://gitlab.td.nchc.org.tw/llm-taskforce/agentic-team/dev/dave/agent-slurm-cli.git",
-      "provider": "gitlab",
+      "url": "__ARCHIFY_REPOSITORY_URL__",
+      "provider": "__ARCHIFY_REPOSITORY_PROVIDER__",
       "link_mode": "web",
-      "revision": "3ff0702ac2e9a89d895e64b4155767858cb2f017"
+      "revision": "__ARCHIFY_REPOSITORY_REVISION__"
     }
   },
   "components": [
